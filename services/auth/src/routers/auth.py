@@ -51,8 +51,8 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(user)
     return TokenResponse(
-        access_token=create_access_token(user.id),
-        refresh_token=create_refresh_token(user.id),
+        access_token=create_access_token(str(user.id)),
+        refresh_token=create_refresh_token(str(user.id)),
     )
 
 
@@ -63,8 +63,8 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "invalid credentials")
     return TokenResponse(
-        access_token=create_access_token(user.id),
-        refresh_token=create_refresh_token(user.id),
+        access_token=create_access_token(str(user.id)),
+        refresh_token=create_refresh_token(str(user.id)),
     )
 
 
@@ -89,8 +89,15 @@ async def me(token: str = Depends(_get_token), db: AsyncSession = Depends(get_db
     except ValueError:
         raise HTTPException(401, "invalid token")
     user_id = payload["sub"]
-    q = await db.execute(select(User).where(User.id == user_id))
+    # user_id is str from JWT; compare as UUID
+    import uuid
+
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(401, "invalid token")
+    q = await db.execute(select(User).where(User.id == uid))
     user = q.scalar_one_or_none()
     if not user:
         raise HTTPException(404, "user not found")
-    return UserResponse(id=user.id, email=user.email)
+    return UserResponse(id=str(user.id), email=user.email)
