@@ -1,0 +1,52 @@
+[project]
+name = "flowix-transcoder"
+version = "0.1.0"
+description = "Flowix Transcoding Worker — Celery + FFmpeg"
+requires-python = ">=3.11"
+dependencies = [
+  "celery>=5.4,<6",
+  "boto3>=1.35,<2",
+  "minio>=7.2,<8",
+  "pydantic>=2.9,<3",
+  "pydantic-settings>=2.6,<3",
+  "redis>=5",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "black>=24",
+  "flake8>=7",
+  "mypy>=1.13",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+disable_error_code = ["import-untyped", "import-not-found"]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
