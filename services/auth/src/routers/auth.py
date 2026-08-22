@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +13,30 @@ from ..core.security import (
 )
 from ..models import User
 from ..schemas import LoginRequest, RegisterRequest, TokenResponse, UserResponse
+
+security = HTTPBearer(auto_error=False)
+refresh_security = HTTPBearer(auto_error=False)
+
+
+def _get_token(
+    creds: HTTPAuthorizationCredentials | None = Depends(security),
+) -> str:
+    if not creds:
+        raise HTTPException(401, "missing token")
+    if creds.scheme.lower() != "bearer":
+        raise HTTPException(401, "invalid auth scheme")
+    return creds.credentials
+
+
+def _get_refresh_token(
+    creds: HTTPAuthorizationCredentials | None = Depends(refresh_security),
+) -> str:
+    if not creds:
+        raise HTTPException(401, "missing token")
+    if creds.scheme.lower() != "bearer":
+        raise HTTPException(401, "invalid auth scheme")
+    return creds.credentials
+
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -44,10 +69,7 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(authorization: str = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "missing token")
-    token = authorization.split(" ", 1)[1]
+async def refresh(token: str = Depends(_get_refresh_token)):
     try:
         payload = decode_token(token)
     except ValueError:
@@ -61,10 +83,7 @@ async def refresh(authorization: str = Header(None)):
 
 
 @router.get("/me", response_model=UserResponse)
-async def me(authorization: str = Header(None), db: AsyncSession = Depends(get_db)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "missing token")
-    token = authorization.split(" ", 1)[1]
+async def me(token: str = Depends(_get_token), db: AsyncSession = Depends(get_db)):
     try:
         payload = decode_token(token)
     except ValueError:
