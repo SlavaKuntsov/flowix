@@ -1,0 +1,95 @@
+{
+  "languages": {
+    "Python": {
+      "language_servers": ["pyright"],
+      "formatter": "language_server",
+      "format_on_save": "on",
+      "code_actions_on_format": {
+        "source.organizeImports.ruff": true,
+        "source.fixAll.ruff": true
+      }
+    },
+    "Go": {
+      "language_servers": ["gopls"],
+      "formatter": "language_server",
+      "format_on_save": "on",
+      "code_actions_on_format": {
+        "source.organizeImports": true
+      }
+    },
+    "TypeScript": {
+      "language_servers": ["typescript-language-server", "eslint"],
+      "formatter": "language_server",
+      "format_on_save": "on",
+      "code_actions_on_format": {
+        "source.fixAll.eslint": true,
+        "source.organizeImports": true
+      }
+    },
+    "TSX": {
+      "language_servers": ["typescript-language-server", "eslint"],
+      "formatter": "language_server",
+      "format_on_save": "on",
+      "code_actions_on_format": {
+        "source.fixAll.eslint": true,
+        "source.organizeImports": true
+      }
+    },
+    "JavaScript": {
+      "language_servers": ["typescript-language-server", "eslint"],
+      "formatter": "language_server",
+      "format_on_save": "on",
+      "code_actions_on_format": {
+        "source.fixAll.eslint": true
+      }
+    }
+  },
+  "lsp": {
+    "pyright": {
+      "settings": {
+        "python.analysis.typeCheckingMode": "basic",
+        "python.analysis.diagnosticMode": "workspace"
+      }
+    },
+    "gopls": {
+      "initialization_options": {
+        "usePlaceholders": true,
+        "analyses": {
+          "unusedparams": true,
+          "shadow": true
+        },
+        "staticcheck": true,
+        "gofumpt": true
+      }
+    },
+    "ruff": {
+      "initialization_options": {
+        "settings": {
+          "lineLength": 100,
+          "lint": {
+            "enable": true,
+            "select": ["E", "F", "I", "W"],
+            "ignore": ["E501"]
+          },
+          "format": {
+            "lineLength": 100
+          }
+        }
+      }
+    },
+    "eslint": {
+      "settings": {
+        "useFlatConfig": true
+      }
+    }
+  },
+  "format_on_save": "on",
+  "remove_trailing_whitespace_on_save": true,
+  "ensure_final_newline_on_save": true,
+  "formatter_settings": {
+    "external": {
+      "command": "sh",
+      "args": ["-c", "if [ \"$ZED_LANGUAGE\" = \"Python\" ]; then uv run --project services/auth ruff check --fix --select I --quiet \"$ZED_FILE\" 2>/dev/null || true; fi"]
+    }
+  }
+}
