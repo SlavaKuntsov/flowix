@@ -253,6 +253,74 @@ npm run lint
 
 ---
 
+## Commit Conventions
+
+This repo follows **Conventional Commits** (https://www.conventionalcommits.org). Every commit message must be structured for auto-changelog and review.
+
+### Format
+
+```
+<type>(<scope>): <short description in imperative, lower case, no period>
+
+[optional body — what & why vs how]
+[optional footer — BREAKING CHANGE, Closes #123]
+```
+
+### Types
+
+| Type | When to use |
+|---|---|
+| `feat` | New feature / new service / new endpoint |
+| `fix` | Bug fix |
+| `docs` | Documentation only (`README`, `docs/`, `AGENTS.md`, service `README.md`) |
+| `chore` | Tooling, configs, scaffolding, deps, `Makefile`, `.gitignore`, `deploy/` infra without business logic |
+| `refactor` | Code restructuring without feature/fix |
+| `test` | Tests, `scripts/e2e.sh` |
+| `build` | Build system, `Dockerfile`, `docker-compose.yml` image changes |
+| `ci` | CI / GitHub Actions |
+| `perf` | Performance improvement |
+| `style` | Formatting / lint fixes only |
+
+### Scopes
+
+Use service or area name: `auth`, `transcoder`, `gateway`, `metadata`, `upload`, `frontend`, `infra`, `repo`, `docs`, `deps`, `zed`. Multiple scopes allowed: `feat(gateway,metadata): ...` or `chore(repo): ...`.
+
+If change touches many areas, omit scope: `chore: ...` or `docs: ...`.
+
+### Rules
+
+1. **Atomic commits** — one logical change per commit. Split large work: `infra` → `auth` → `transcoder` → `frontend` → `docs`, not one mega-commit.
+2. **Imperative mood, lower case, no period**: `feat(auth): add JWT refresh` ✅ / `Feat(Auth): Added refresh.` ❌
+3. **Header ≤72 chars**, body wrapped at 100 chars, explain *why* in body if not obvious.
+4. **Language**: English for `type(scope):`, body may be EN or RU (prefer EN). Keep history consistent.
+5. **Breaking changes**: footer `BREAKING CHANGE: ...` and use `feat!:` / `fix!:` if API/contract breaks.
+6. **Never commit**: `.env`, secrets, `__pycache__/`, `.venv/`, `node_modules/`, `data/`, `tmp/` — see `.gitignore:1`.
+7. **Update docs/tests together** with code when contract changes (README, `AGENTS.md`, `services/*/README.md`).
+
+### Examples
+
+```bash
+feat(auth): add JWT register/login with argon2
+feat(transcoder): implement celery worker with aligned FFmpeg segments
+feat(infra): add postgres/minio/rabbitmq compose with healthchecks
+chore(repo): init Makefile, .env.example and lint configs
+docs(plan): add 8-phase implementation plan
+fix(upload): handle multipart boundary error
+refactor(gateway): extract reverse proxy middleware
+test(e2e): add upload→transcode→hls pipeline check
+build(auth): switch Dockerfile to uv multi-stage
+```
+
+### Workflow for AI agents
+
+1. `git status --porcelain`, `git diff --stat` — inspect changes.
+2. Update `.gitignore` if new generated artifacts appear.
+3. Stage by logical group: `git add <scope-files>`.
+4. Commit with `type(scope):` following table above.
+5. Repeat until `git status` clean. Never mix unrelated scopes in one commit.
+
+---
+
 ## Resources
 
 - [nginx-vod-module documentation](https://github.com/kaltura/nginx-vod-module)
