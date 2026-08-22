@@ -1,0 +1,63 @@
+[project]
+name = "flowix-auth"
+version = "0.1.0"
+description = "Flowix Auth Service — FastAPI + JWT"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<0.116",
+  "uvicorn[standard]>=0.34,<0.35",
+  "sqlalchemy[asyncio]>=2.0,<3",
+  "asyncpg>=0.30,<0.31",
+  "alembic>=1.14,<2",
+  "python-jose[cryptography]>=3.3,<4",
+  "passlib[argon2]>=1.7,<2",
+  "pydantic[email]>=2.9,<3",
+  "email-validator>=2.0",
+  "pydantic-settings>=2.6,<3",
+  "python-multipart>=0.0.9",
+  "httpx>=0.27,<0.28",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "black>=24",
+  "flake8>=7",
+  "mypy>=1.13",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+disable_error_code = ["import-untyped", "import-not-found", "import"]
+
+[[tool.mypy.overrides]]
+module = ["jose.*", "passlib.*"]
+ignore_missing_imports = true
+
+[tool.pyright]
+typeCheckingMode = "basic"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
