@@ -1,0 +1,170 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flowix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowix}
+      POSTGRES_DB: ${POSTGRES_DB:-flowix}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flowix} -d ${POSTGRES_DB:-flowix}"]
+      interval: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      retries: 5
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      /usr/bin/mc mb -p local/$${VIDEO_STORAGE_BUCKET:-videos} || true &&
+      /usr/bin/mc anonymous set public local/$${VIDEO_STORAGE_BUCKET:-videos} || true &&
+      exit 0
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      VIDEO_STORAGE_BUCKET: ${VIDEO_STORAGE_BUCKET:-videos}
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-flowix}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-flowix}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      retries: 10
+
+  # Placeholder nginx-vod — replaced with custom build in Phase 5
+  nginx-vod:
+    image: nginx:alpine
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "${NGINX_VOD_PORT:-8081}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/health"]
+      interval: 10s
+      retries: 5
+
+  # App services — built in later phases, kept here for routing
+  auth:
+    build: ../services/auth
+    environment:
+      DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
+      RABBITMQ_URL: amqp://flowix:flowix@rabbitmq:5672/
+      JWT_SECRET: ${JWT_SECRET}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+    ports:
+      - "${AUTH_PORT:-8001}:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  metadata:
+    build: ../services/metadata
+    environment:
+      DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+    ports:
+      - "${METADATA_PORT:-8002}:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  upload:
+    build: ../services/upload
+    environment:
+      DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
+      RABBITMQ_URL: amqp://flowix:flowix@rabbitmq:5672/
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      VIDEO_STORAGE_BUCKET: ${VIDEO_STORAGE_BUCKET:-videos}
+      METADATA_URL: http://metadata:8002
+      JWT_SECRET: ${JWT_SECRET}
+    ports:
+      - "${UPLOAD_PORT:-8003}:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  transcoder:
+    build: ../services/transcoder
+    environment:
+      RABBITMQ_URL: amqp://flowix:flowix@rabbitmq:5672/
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      VIDEO_STORAGE_BUCKET: ${VIDEO_STORAGE_BUCKET:-videos}
+      METADATA_URL: http://metadata:8002
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  gateway:
+    build: ../services/gateway
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_URL: http://auth:8001
+      METADATA_URL: http://metadata:8002
+      UPLOAD_URL: http://upload:8003
+      VOD_URL: http://nginx-vod:80
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      - auth
+      - metadata
+      - upload
+      - nginx-vod
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  miniodata:
+  rabbitdata:
