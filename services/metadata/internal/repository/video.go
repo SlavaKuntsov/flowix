@@ -1,12 +1,13 @@
+// Package repository handles persistence for video metadata.
 package repository
 
 import (
 	"context"
 	"fmt"
 
+	"flowix/metadata/internal/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"flowix/metadata/internal/model"
 )
 
 type VideoRepo struct {
@@ -107,7 +108,7 @@ func (r *VideoRepo) UpdateStatus(ctx context.Context, id string, status model.Vi
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `UPDATE videos SET status=$1 WHERE id=$2`, status, id); err != nil {
 		return err
 	}

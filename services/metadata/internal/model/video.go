@@ -12,14 +12,14 @@ const (
 )
 
 type Video struct {
-	ID          string        `json:"id"`
-	OwnerID     string        `json:"owner_id"`
-	Title       string        `json:"title"`
-	Description string        `json:"description"`
-	Duration    *int          `json:"duration,omitempty"`
-	Status      VideoStatus   `json:"status"`
-	CreatedAt   time.Time     `json:"created_at"`
-	Renditions  []Rendition   `json:"renditions,omitempty"`
+	ID          string      `json:"id"`
+	OwnerID     string      `json:"owner_id"`
+	Title       string      `json:"title"`
+	Description string      `json:"description"`
+	Duration    *int        `json:"duration,omitempty"`
+	Status      VideoStatus `json:"status"`
+	CreatedAt   time.Time   `json:"created_at"`
+	Renditions  []Rendition `json:"renditions,omitempty"`
 }
 
 type Rendition struct {

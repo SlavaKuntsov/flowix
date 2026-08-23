@@ -1,7 +1,9 @@
 import re
 from datetime import datetime, timedelta, timezone
-from jose import jwt, JWTError  # type: ignore[import-untyped]
+
+from jose import JWTError, jwt  # type: ignore[import-untyped]
 from passlib.context import CryptContext  # type: ignore[import-untyped]
+
 from .config import settings
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")

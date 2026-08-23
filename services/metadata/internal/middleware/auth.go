@@ -1,3 +1,4 @@
+// Package middleware provides HTTP middleware for metadata service.
 package middleware
 
 import (

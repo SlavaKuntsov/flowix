@@ -9,13 +9,13 @@ import (
 	"os"
 	"strings"
 
+	"flowix/metadata/internal/handler"
+	mw "flowix/metadata/internal/middleware"
+	"flowix/metadata/internal/repository"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
-	"flowix/metadata/internal/handler"
-	mw "flowix/metadata/internal/middleware"
-	"flowix/metadata/internal/repository"
 )
 
 func main() {
@@ -52,10 +52,10 @@ func main() {
 	r.Use(middleware.Logger, middleware.Recoverer, middleware.RequestID)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "metadata"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "metadata"})
 	})
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{"service": "metadata", "version": "0.1"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"service": "metadata", "version": "0.1"})
 	})
 	// protected routes: need JWT
 	r.Group(func(r chi.Router) {

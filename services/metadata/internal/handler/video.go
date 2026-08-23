@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/go-chi/chi/v5"
 	"flowix/metadata/internal/middleware"
 	"flowix/metadata/internal/model"
 	"flowix/metadata/internal/repository"
+	"github.com/go-chi/chi/v5"
 )
 
 type VideoHandler struct {
@@ -50,7 +50,10 @@ func (h *VideoHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(201)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		http.Error(w, `{"error":"encode failed"}`, 500)
+		return
+	}
 }
 
 func (h *VideoHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +63,10 @@ func (h *VideoHandler) Get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"not found"}`, 404)
 		return
 	}
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		http.Error(w, `{"error":"encode failed"}`, 500)
+		return
+	}
 }
 
 func (h *VideoHandler) GetInternal(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +93,10 @@ func (h *VideoHandler) List(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []model.Video{}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"data": list, "limit": limit, "offset": offset})
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{"data": list, "limit": limit, "offset": offset}); err != nil {
+		http.Error(w, `{"error":"encode failed"}`, 500)
+		return
+	}
 }
 
 func (h *VideoHandler) Update(w http.ResponseWriter, r *http.Request) {
@@ -101,13 +110,16 @@ func (h *VideoHandler) Update(w http.ResponseWriter, r *http.Request) {
 	v, err := h.repo.Update(r.Context(), id, ownerID, req)
 	if err != nil {
 		if err.Error() == "forbidden" {
-			http.Error(w, `{"error":"forbidden"}`, 403)
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 			return
 		}
 		http.Error(w, `{"error":"not found"}`, 404)
 		return
 	}
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		http.Error(w, `{"error":"encode failed"}`, 500)
+		return
+	}
 }
 
 func (h *VideoHandler) Delete(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +128,7 @@ func (h *VideoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	err := h.repo.Delete(r.Context(), id, ownerID)
 	if err != nil {
 		if err.Error() == "forbidden" {
-			http.Error(w, `{"error":"forbidden"}`, 403)
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 			return
 		}
 		http.Error(w, `{"error":"not found"}`, 404)
@@ -140,5 +152,8 @@ func (h *VideoHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, 500)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
+		http.Error(w, `{"error":"encode failed"}`, 500)
+		return
+	}
 }
