@@ -18,11 +18,13 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger, middleware.Recoverer)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "upload"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "upload"})
 	})
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{"service": "upload", "phase": "stub"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"service": "upload", "phase": "stub"})
 	})
 	log.Printf("upload stub listening :%s", port)
-	http.ListenAndServe(":"+port, r)
+	if err := http.ListenAndServe(":"+port, r); err != nil {
+		log.Fatal(err)
+	}
 }
