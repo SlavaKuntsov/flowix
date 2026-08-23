@@ -69,12 +69,24 @@ test-py:
 	uv run --project services/auth pytest -q
 	uv run --project services/transcoder pytest -q
 
-# local dev via uv
+# local dev via uv / go (требует Go 1.23 локально, иначе используй docker compose up)
 dev-auth:
 	uv run --project services/auth uvicorn src.main:app --reload --port 8001
 
 dev-transcoder:
 	uv run --project services/transcoder celery -A app.celery_app worker --loglevel=info
+
+dev-metadata:
+	set -a; . ./.env 2>/dev/null || true; go run ./services/metadata/cmd/server
+
+dev-upload:
+	set -a; . ./.env 2>/dev/null || true; go run ./services/upload/cmd/server
+
+dev-gateway:
+	set -a; . ./.env 2>/dev/null || true; go run ./services/gateway/cmd/server
+
+dev-frontend:
+	cd frontend && npm run dev
 
 # Frontend
 lint-front:
