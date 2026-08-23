@@ -21,15 +21,30 @@ ps:
 build:
 	$(COMPOSE) build
 
-# Go
+# Go — локально если установлено, иначе через Docker (golang:1.23, golangci-lint)
+# Каждый сервис — отдельный go.mod, поэтому линтим per-service
 lint-go:
-	golangci-lint run ./services/...
+	@for svc in metadata gateway upload; do \
+	  echo "==> lint $$svc"; \
+	  if which golangci-lint >/dev/null 2>&1; then \
+	    (cd services/$$svc && golangci-lint run ./...) || exit 1; \
+	  else \
+	    docker run --rm -v $(PWD):/app -w /app/services/$$svc golangci/golangci-lint:latest golangci-lint run ./... || exit 1; \
+	  fi; \
+	done
 
 fmt-go:
-	gofmt -w services/
+	@which gofmt >/dev/null 2>&1 && gofmt -w services/ || docker run --rm -v $(PWD):/app -w /app golang:1.23-alpine gofmt -w ./services
 
 test-go:
-	go test ./services/...
+	@for svc in metadata gateway upload; do \
+	  echo "==> test $$svc"; \
+	  if which go >/dev/null 2>&1; then \
+	    (cd services/$$svc && go test ./...) || exit 1; \
+	  else \
+	    docker run --rm -v $(PWD):/app -w /app/services/$$svc golang:1.23-alpine go test ./... || exit 1; \
+	  fi; \
+	done
 
 # Python (uv) — пути абсолютные из корня, т.к. uv --project не меняет cwd
 lint-py:
