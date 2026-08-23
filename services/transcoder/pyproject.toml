@@ -18,6 +18,7 @@ dev = [
   "black>=24",
   "flake8>=7",
   "mypy>=1.13",
+  "ruff>=0.8",
 ]
 
 [tool.black]
