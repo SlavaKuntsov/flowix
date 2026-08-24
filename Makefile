@@ -66,8 +66,8 @@ fix-py:
 	uv run --project services/transcoder black services/transcoder/app --target-version py311
 
 test-py:
-	uv run --project services/auth pytest -q
-	uv run --project services/transcoder pytest -q
+	uv run --project services/auth pytest services/auth/tests -q
+	uv run --project services/transcoder pytest services/transcoder/tests -q
 
 # local dev via uv / go (требует Go 1.27 локально, иначе используй docker compose up)
 dev-auth:
