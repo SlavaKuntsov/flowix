@@ -9,10 +9,10 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen || uv sync
 
 FROM python:3.11-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl procps && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/app ./app
 COPY pyproject.toml ./
 ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app VIRTUAL_ENV=/app/.venv
-CMD ["celery", "-A", "app.celery_app", "worker", "--loglevel=info"]
-HEALTHCHECK --interval=30s CMD celery -A app.celery_app inspect ping | grep -q pong || exit 1
+CMD ["python", "-m", "app.consumer"]
+HEALTHCHECK --interval=30s CMD pgrep -f "app.consumer" >/dev/null || exit 1

@@ -3,7 +3,7 @@
 # .env — единственный в корне, compose явно указывает на него (--env-file), deploy/.env не нужен
 COMPOSE=docker compose --env-file .env -f deploy/docker-compose.yml
 
-.PHONY: up down logs ps build lint fmt test e2e
+.PHONY: up down logs ps build lint fmt test e2e swagger swagger-install
 
 up:
 	$(COMPOSE) up --build -d
@@ -21,7 +21,7 @@ ps:
 build:
 	$(COMPOSE) build
 
-# Go — локально если установлено, иначе через Docker (golang:1.23, golangci-lint)
+# Go — локально если установлено, иначе через Docker (golang:1.27, golangci-lint)
 # Каждый сервис — отдельный go.mod, поэтому линтим per-service
 lint-go:
 	@for svc in metadata gateway upload; do \
@@ -34,7 +34,7 @@ lint-go:
 	done
 
 fmt-go:
-	@which gofmt >/dev/null 2>&1 && gofmt -w services/ || docker run --rm -v $(PWD):/app -w /app golang:1.23-alpine gofmt -w ./services
+	@which gofmt >/dev/null 2>&1 && gofmt -w services/ || docker run --rm -v $(PWD):/app -w /app golang:1.27-alpine gofmt -w ./services
 
 test-go:
 	@for svc in metadata gateway upload; do \
@@ -42,7 +42,7 @@ test-go:
 	  if which go >/dev/null 2>&1; then \
 	    (cd services/$$svc && go test ./...) || exit 1; \
 	  else \
-	    docker run --rm -v $(PWD):/app -w /app/services/$$svc golang:1.23-alpine go test ./... || exit 1; \
+	    docker run --rm -v $(PWD):/app -w /app/services/$$svc golang:1.27-alpine go test ./... || exit 1; \
 	  fi; \
 	done
 
@@ -69,7 +69,7 @@ test-py:
 	uv run --project services/auth pytest -q
 	uv run --project services/transcoder pytest -q
 
-# local dev via uv / go (требует Go 1.23 локально, иначе используй docker compose up)
+# local dev via uv / go (требует Go 1.27 локально, иначе используй docker compose up)
 dev-auth:
 	uv run --project services/auth uvicorn src.main:app --reload --port 8001
 
@@ -77,13 +77,13 @@ dev-transcoder:
 	uv run --project services/transcoder celery -A app.celery_app worker --loglevel=info
 
 dev-metadata:
-	set -a; . ./.env 2>/dev/null || true; go run ./services/metadata/cmd/server
+	set -a; . ./.env 2>/dev/null || true; cd services/metadata && go run ./cmd/server
 
 dev-upload:
-	set -a; . ./.env 2>/dev/null || true; go run ./services/upload/cmd/server
+	set -a; . ./.env 2>/dev/null || true; cd services/upload && go run ./cmd/server
 
 dev-gateway:
-	set -a; . ./.env 2>/dev/null || true; go run ./services/gateway/cmd/server
+	set -a; . ./.env 2>/dev/null || true; cd services/gateway && go run ./cmd/server
 
 dev-frontend:
 	cd frontend && npm run dev
@@ -97,3 +97,12 @@ fmt-front:
 
 e2e:
 	bash scripts/e2e.sh
+
+# Swagger (Go chi) — генерация docs для metadata и upload
+swagger-install:
+	go install github.com/swaggo/swag/cmd/swag@latest
+
+swagger:
+	@bash -c 'cd services/metadata && (which swag >/dev/null 2>&1 && swag init -g cmd/server/main.go --parseDependency --parseInternal -o docs || ~/go/bin/swag init -g cmd/server/main.go --parseDependency --parseInternal -o docs)'
+	@bash -c 'cd services/upload && (which swag >/dev/null 2>&1 && swag init -g cmd/server/main.go --parseDependency --parseInternal -o docs || ~/go/bin/swag init -g cmd/server/main.go --parseDependency --parseInternal -o docs)'
+	@echo "swagger generated: services/metadata/docs, services/upload/docs — пересобери: docker compose --env-file .env -f deploy/docker-compose.yml up -d --build metadata upload"
