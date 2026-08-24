@@ -18,20 +18,33 @@ def test_update_status_payload():
 
         mock_patch.reset_mock()
         renditions = [
-            {"quality": "720p", "bitrate": 2500, "width": 1280, "height": 720, "s3_key": "renditions/vid-1/720p.mp4"}
+            {
+                "quality": "720p",
+                "bitrate": 2500,
+                "width": 1280,
+                "height": 720,
+                "s3_key": "renditions/vid-1/720p.mp4",
+            }
         ]
         cons.update_status("vid-1", "ready", renditions)
         assert mock_patch.call_args[1]["json"]["renditions"] == renditions
 
 
 def test_process_message_success():
-    body = json.dumps({"video_id": "vid-123", "s3_key": "raw/vid-123/original.mp4", "owner_id": "owner1"}).encode()
+    body = json.dumps(
+        {"video_id": "vid-123", "s3_key": "raw/vid-123/original.mp4", "owner_id": "owner1"}
+    ).encode()
     fake_minio = MagicMock()
     fake_minio.stat_object.return_value = MagicMock()
-    fake_minio.copy_object.return_value = None
+    fake_minio.fget_object.return_value = None
+    fake_minio.fput_object.return_value = None
 
-    with patch("app.consumer.get_minio", return_value=fake_minio), patch("app.consumer.update_status") as mock_status, patch(
-        "app.consumer.time.sleep"
+    with (
+        patch("app.consumer.get_minio", return_value=fake_minio),
+        patch("app.consumer.update_status") as mock_status,
+        patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.transcode_one", return_value=None),
+        patch("app.consumer.transcode_thumbnail", return_value=None),
     ):
         cons.process_message(body)
 
@@ -43,11 +56,16 @@ def test_process_message_success():
         renditions = mock_status.call_args_list[1][0][2]
         assert len(renditions) == 3
         assert {r["quality"] for r in renditions} == {"360p", "720p", "1080p"}
-        assert fake_minio.copy_object.call_count == 3
+        # 3 renditions uploaded via fput (thumbnail maybe filtered)
+        assert fake_minio.fput_object.call_count == 3
+        fake_minio.fget_object.assert_called_once()
 
 
 def test_process_message_invalid_json():
-    with patch("app.consumer.update_status") as mock_status, patch("app.consumer.get_minio") as mock_get:
+    with (
+        patch("app.consumer.update_status") as mock_status,
+        patch("app.consumer.get_minio") as mock_get,
+    ):
         cons.process_message(b"not json")
         mock_status.assert_not_called()
         mock_get.assert_not_called()
@@ -65,8 +83,9 @@ def test_process_message_minio_failure_marks_failed():
     fake_minio = MagicMock()
     fake_minio.stat_object.side_effect = Exception("not found")
 
-    with patch("app.consumer.get_minio", return_value=fake_minio), patch("app.consumer.update_status") as mock_status, patch(
-        "app.consumer.time.sleep"
+    with (
+        patch("app.consumer.get_minio", return_value=fake_minio),
+        patch("app.consumer.update_status") as mock_status,
     ):
         cons.process_message(body)
         # first processing, then failed
@@ -74,14 +93,37 @@ def test_process_message_minio_failure_marks_failed():
         assert mock_status.call_args_list[1][0][1] == "failed"
 
 
-def test_process_message_copy_failure_marks_failed():
+def test_process_message_transcode_failure_marks_failed():
     body = json.dumps({"video_id": "vid-1", "s3_key": "raw/vid-1/original.mp4"}).encode()
     fake_minio = MagicMock()
     fake_minio.stat_object.return_value = MagicMock()
-    fake_minio.copy_object.side_effect = Exception("copy error")
+    fake_minio.fget_object.return_value = None
 
-    with patch("app.consumer.get_minio", return_value=fake_minio), patch("app.consumer.update_status") as mock_status, patch(
-        "app.consumer.time.sleep"
+    with (
+        patch("app.consumer.get_minio", return_value=fake_minio),
+        patch("app.consumer.update_status") as mock_status,
+        patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.transcode_one", side_effect=Exception("ffmpeg error")),
+        patch("app.consumer.transcode_thumbnail", return_value=None),
     ):
         cons.process_message(body)
         assert mock_status.call_args_list[-1][0][1] == "failed"
+
+
+def test_transcode_one_builds_aligned_cmd():
+    with patch("app.consumer.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock()
+        cons.transcode_one("/tmp/in.mp4", "/tmp/out.mp4", 1280, 720, 2500, "128k")
+        cmd = mock_run.call_args[0][0]
+        assert "ffmpeg" in cmd
+        assert "-force_key_frames" in cmd
+        assert "expr:gte(t,n_forced*2)" in cmd
+        assert "-g" in cmd and "60" in cmd
+        assert "-r" in cmd and "30" in cmd
+        assert "-sc_threshold" in cmd and "0" in cmd
+        assert "scale=-2:720" in " ".join(cmd)
+
+
+def test_probe_video_handles_missing_ffprobe():
+    with patch("app.consumer.subprocess.run", side_effect=FileNotFoundError("no ffprobe")):
+        assert cons.probe_video("/tmp/x.mp4") is None
