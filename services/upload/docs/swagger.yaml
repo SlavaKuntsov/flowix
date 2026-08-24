@@ -1,0 +1,59 @@
+basePath: /
+info:
+  contact: {}
+  description: Upload video to MinIO + publish video.uploaded event. JWT required.
+  title: Flowix Upload API
+  version: "1.0"
+paths:
+  /api/v1/videos/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'Multipart upload: file + title/description. Creates metadata,
+        stores to MinIO, publishes video.uploaded.'
+      parameters:
+      - description: video file
+        in: formData
+        name: file
+        required: true
+        type: file
+      - description: Title (default filename)
+        in: formData
+        name: title
+        type: string
+      - description: Description
+        in: formData
+        name: description
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: id, s3_key, status
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: invalid body
+          schema:
+            type: string
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+        "502":
+          description: metadata error
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Upload video file
+      tags:
+      - upload
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer {token}"
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
