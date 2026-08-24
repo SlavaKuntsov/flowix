@@ -1,0 +1,269 @@
+basePath: /
+definitions:
+  flowix_metadata_internal_model.CreateVideoRequest:
+    properties:
+      description:
+        type: string
+      title:
+        type: string
+    required:
+    - title
+    type: object
+  flowix_metadata_internal_model.Rendition:
+    properties:
+      bitrate:
+        type: integer
+      height:
+        type: integer
+      quality:
+        type: string
+      s3_key:
+        type: string
+      video_id:
+        type: string
+      width:
+        type: integer
+    type: object
+  flowix_metadata_internal_model.UpdateStatusRequest:
+    properties:
+      renditions:
+        items:
+          $ref: '#/definitions/flowix_metadata_internal_model.Rendition'
+        type: array
+      status:
+        $ref: '#/definitions/flowix_metadata_internal_model.VideoStatus'
+    type: object
+  flowix_metadata_internal_model.UpdateVideoRequest:
+    properties:
+      description:
+        type: string
+      title:
+        type: string
+    type: object
+  flowix_metadata_internal_model.Video:
+    properties:
+      created_at:
+        type: string
+      description:
+        type: string
+      duration:
+        type: integer
+      id:
+        type: string
+      owner_id:
+        type: string
+      renditions:
+        items:
+          $ref: '#/definitions/flowix_metadata_internal_model.Rendition'
+        type: array
+      status:
+        $ref: '#/definitions/flowix_metadata_internal_model.VideoStatus'
+      title:
+        type: string
+    type: object
+  flowix_metadata_internal_model.VideoStatus:
+    enum:
+    - uploaded
+    - processing
+    - ready
+    - failed
+    type: string
+    x-enum-varnames:
+    - StatusUploaded
+    - StatusProcessing
+    - StatusReady
+    - StatusFailed
+info:
+  contact: {}
+  description: Video metadata CRUD + internal status (Go chi). JWT Bearer required
+    for write ops.
+  title: Flowix Metadata API
+  version: "1.0"
+paths:
+  /api/v1/videos:
+    get:
+      parameters:
+      - default: 20
+        description: Limit 1-100
+        in: query
+        name: limit
+        type: integer
+      - default: 0
+        description: Offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List videos
+      tags:
+      - videos
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/flowix_metadata_internal_model.CreateVideoRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/flowix_metadata_internal_model.Video'
+        "400":
+          description: invalid body
+          schema:
+            type: string
+        "401":
+          description: unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Create video metadata
+      tags:
+      - videos
+  /api/v1/videos/{id}:
+    delete:
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "404":
+          description: not found
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Delete video (owner only)
+      tags:
+      - videos
+    get:
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/flowix_metadata_internal_model.Video'
+        "404":
+          description: not found
+          schema:
+            type: string
+      summary: Get video by ID
+      tags:
+      - videos
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/flowix_metadata_internal_model.UpdateVideoRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/flowix_metadata_internal_model.Video'
+        "403":
+          description: forbidden
+          schema:
+            type: string
+        "404":
+          description: not found
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Update video (owner only)
+      tags:
+      - videos
+  /internal/videos/{id}:
+    get:
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/flowix_metadata_internal_model.Video'
+      summary: Internal get video (no auth)
+      tags:
+      - internal
+  /internal/videos/{id}/status:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Status
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/flowix_metadata_internal_model.UpdateStatusRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Internal update status (transcoder/upload)
+      tags:
+      - internal
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer {token}" for JWT
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

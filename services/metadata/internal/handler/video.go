@@ -2,12 +2,14 @@ package handler
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 
 	"flowix/metadata/internal/middleware"
 	"flowix/metadata/internal/model"
 	"flowix/metadata/internal/repository"
+
 	"github.com/go-chi/chi/v5"
 )
 
@@ -32,128 +34,174 @@ func (h *VideoHandler) Register(r chi.Router) {
 	r.Get("/internal/videos/{id}", h.GetInternal)
 }
 
+// Create godoc
+// @Summary Create video metadata
+// @Tags videos
+// @Accept json
+// @Produce json
+// @Param body body model.CreateVideoRequest true "Create"
+// @Security BearerAuth
+// @Success 201 {object} model.Video
+// @Failure 400 {string} string "invalid body"
+// @Failure 401 {string} string "unauthorized"
+// @Router /api/v1/videos [post]
 func (h *VideoHandler) Create(w http.ResponseWriter, r *http.Request) {
 	ownerID := middleware.UserIDFromCtx(r.Context())
 	var req model.CreateVideoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid body"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "invalid body")
 		return
 	}
 	if req.Title == "" {
-		http.Error(w, `{"error":"title required"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "title required")
 		return
 	}
 	v, err := h.repo.Create(r.Context(), ownerID, req.Title, req.Description)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, 500)
+		slog.Error("create video failed", "error", err, "owner_id", ownerID)
+		writeError(w, r, http.StatusInternalServerError, "internal error")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(201)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		http.Error(w, `{"error":"encode failed"}`, 500)
-		return
-	}
+	writeJSON(w, r, http.StatusCreated, v)
 }
 
+// Get godoc
+// @Summary Get video by ID
+// @Tags videos
+// @Produce json
+// @Param id path string true "Video ID"
+// @Success 200 {object} model.Video
+// @Failure 404 {string} string "not found"
+// @Router /api/v1/videos/{id} [get]
 func (h *VideoHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	v, err := h.repo.GetByID(r.Context(), id)
 	if err != nil {
-		http.Error(w, `{"error":"not found"}`, 404)
+		writeError(w, r, http.StatusNotFound, "not found")
 		return
 	}
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		http.Error(w, `{"error":"encode failed"}`, 500)
-		return
-	}
+	writeJSON(w, r, http.StatusOK, v)
 }
 
+// GetInternal godoc
+// @Summary Internal get video (no auth)
+// @Tags internal
+// @Produce json
+// @Param id path string true "Video ID"
+// @Success 200 {object} model.Video
+// @Router /internal/videos/{id} [get]
 func (h *VideoHandler) GetInternal(w http.ResponseWriter, r *http.Request) {
-	// same as Get but for internal service-to-service (no auth)
 	h.Get(w, r)
 }
 
+// List godoc
+// @Summary List videos
+// @Tags videos
+// @Produce json
+// @Param limit query int false "Limit 1-100" default(20)
+// @Param offset query int false "Offset" default(0)
+// @Success 200 {object} map[string]interface{}
+// @Router /api/v1/videos [get]
 func (h *VideoHandler) List(w http.ResponseWriter, r *http.Request) {
-	limitStr := r.URL.Query().Get("limit")
-	offsetStr := r.URL.Query().Get("offset")
 	limit := 20
 	offset := 0
-	if v, err := strconv.Atoi(limitStr); err == nil && v > 0 && v <= 100 {
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 100 {
 		limit = v
 	}
-	if v, err := strconv.Atoi(offsetStr); err == nil && v >= 0 {
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
 		offset = v
 	}
 	list, err := h.repo.List(r.Context(), limit, offset)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, 500)
+		slog.Error("list videos failed", "error", err)
+		writeError(w, r, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if list == nil {
 		list = []model.Video{}
 	}
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{"data": list, "limit": limit, "offset": offset}); err != nil {
-		http.Error(w, `{"error":"encode failed"}`, 500)
-		return
-	}
+	writeJSON(w, r, http.StatusOK, map[string]interface{}{"data": list, "limit": limit, "offset": offset})
 }
 
+// Update godoc
+// @Summary Update video (owner only)
+// @Tags videos
+// @Accept json
+// @Produce json
+// @Param id path string true "Video ID"
+// @Param body body model.UpdateVideoRequest true "Update"
+// @Security BearerAuth
+// @Success 200 {object} model.Video
+// @Failure 403 {string} string "forbidden"
+// @Failure 404 {string} string "not found"
+// @Router /api/v1/videos/{id} [patch]
 func (h *VideoHandler) Update(w http.ResponseWriter, r *http.Request) {
 	ownerID := middleware.UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	var req model.UpdateVideoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid body"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "invalid body")
 		return
 	}
 	v, err := h.repo.Update(r.Context(), id, ownerID, req)
 	if err != nil {
 		if err.Error() == "forbidden" {
-			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			writeError(w, r, http.StatusForbidden, "forbidden")
 			return
 		}
-		http.Error(w, `{"error":"not found"}`, 404)
+		writeError(w, r, http.StatusNotFound, "not found")
 		return
 	}
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		http.Error(w, `{"error":"encode failed"}`, 500)
-		return
-	}
+	writeJSON(w, r, http.StatusOK, v)
 }
 
+// Delete godoc
+// @Summary Delete video (owner only)
+// @Tags videos
+// @Security BearerAuth
+// @Param id path string true "Video ID"
+// @Success 204 "No Content"
+// @Failure 403 {string} string "forbidden"
+// @Failure 404 {string} string "not found"
+// @Router /api/v1/videos/{id} [delete]
 func (h *VideoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	ownerID := middleware.UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
-	err := h.repo.Delete(r.Context(), id, ownerID)
-	if err != nil {
+	if err := h.repo.Delete(r.Context(), id, ownerID); err != nil {
 		if err.Error() == "forbidden" {
-			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			writeError(w, r, http.StatusForbidden, "forbidden")
 			return
 		}
-		http.Error(w, `{"error":"not found"}`, 404)
+		writeError(w, r, http.StatusNotFound, "not found")
 		return
 	}
-	w.WriteHeader(204)
+	w.WriteHeader(http.StatusNoContent)
 }
 
+// UpdateStatus godoc
+// @Summary Internal update status (transcoder/upload)
+// @Tags internal
+// @Accept json
+// @Produce json
+// @Param id path string true "Video ID"
+// @Param body body model.UpdateStatusRequest true "Status"
+// @Success 200 {object} map[string]string
+// @Router /internal/videos/{id}/status [patch]
 func (h *VideoHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var req model.UpdateStatusRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid body"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "invalid body")
 		return
 	}
 	if req.Status != model.StatusUploaded && req.Status != model.StatusProcessing && req.Status != model.StatusReady && req.Status != model.StatusFailed {
-		http.Error(w, `{"error":"invalid status"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "invalid status")
 		return
 	}
 	if err := h.repo.UpdateStatus(r.Context(), id, req.Status, req.Renditions); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, 500)
+		slog.Error("update status failed", "error", err, "video_id", id)
+		writeError(w, r, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
-		http.Error(w, `{"error":"encode failed"}`, 500)
-		return
-	}
+	writeJSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
 }
