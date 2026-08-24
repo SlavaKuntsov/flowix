@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -8,16 +9,25 @@ import (
 
 	"flowix/metadata/internal/middleware"
 	"flowix/metadata/internal/model"
-	"flowix/metadata/internal/repository"
 
 	"github.com/go-chi/chi/v5"
 )
 
-type VideoHandler struct {
-	repo *repository.VideoRepo
+// VideoStore abstracts persistence — allows in-memory fake for tests (T2 stepwise).
+type VideoStore interface {
+	Create(ctx context.Context, ownerID, title, description string) (*model.Video, error)
+	GetByID(ctx context.Context, id string) (*model.Video, error)
+	List(ctx context.Context, limit, offset int) ([]model.Video, error)
+	Update(ctx context.Context, id, ownerID string, req model.UpdateVideoRequest) (*model.Video, error)
+	Delete(ctx context.Context, id, ownerID string) error
+	UpdateStatus(ctx context.Context, id string, status model.VideoStatus, renditions []model.Rendition) error
 }
 
-func NewVideoHandler(repo *repository.VideoRepo) *VideoHandler { return &VideoHandler{repo: repo} }
+type VideoHandler struct {
+	repo VideoStore
+}
+
+func NewVideoHandler(repo VideoStore) *VideoHandler { return &VideoHandler{repo: repo} }
 
 func (h *VideoHandler) Register(r chi.Router) {
 	// public: health

@@ -1,20 +1,32 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
-	"flowix/upload/internal/client"
 	mw "flowix/upload/internal/middleware"
-	"flowix/upload/internal/queue"
-	"flowix/upload/internal/storage"
 )
 
+// UploadHandler dependencies as interfaces — T3 stepwise fakes without MinIO/RabbitMQ.
+type Storage interface {
+	PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
+}
+
+type Publisher interface {
+	Publish(ctx context.Context, payload interface{}) error
+}
+
+type MetadataCreator interface {
+	CreateVideo(token, title, description string) (string, error)
+}
+
 type UploadHandler struct {
-	storage   *storage.MinioClient
-	publisher *queue.Publisher
-	metadata  *client.MetadataClient
+	storage   Storage
+	publisher Publisher
+	metadata  MetadataCreator
 }
 
 type VideoUploadedEvent struct {
@@ -23,7 +35,7 @@ type VideoUploadedEvent struct {
 	OwnerID string `json:"owner_id"`
 }
 
-func NewUploadHandler(s *storage.MinioClient, p *queue.Publisher, m *client.MetadataClient) *UploadHandler {
+func NewUploadHandler(s Storage, p Publisher, m MetadataCreator) *UploadHandler {
 	return &UploadHandler{storage: s, publisher: p, metadata: m}
 }
 
