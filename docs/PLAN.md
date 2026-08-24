@@ -2,7 +2,7 @@
 
 > Дата: 2026-08-22
 > Стек утвержден: RabbitMQ + chi (Go) + nginx-vod JIT + Next.js 14
-> Источник ТЗ: `AGENTS.md`
+> Источник ТЗ: `docs/spec.md:1` (архив бывшего `AGENTS.md`)
 
 ## Утвержденные решения
 

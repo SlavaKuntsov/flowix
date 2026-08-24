@@ -1,333 +1,124 @@
+# AGENTS.md — Flowix guidelines
 
-# AGENTS.md
+> Источник принципов: [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills) (Andrej Karpathy observations). Логика проекта — `docs/spec.md:1` и `docs/services-pipeline.md:1`.
 
-## Project Overview
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
-This is a pet project for building a video streaming platform MVP with modern features:
-- Adaptive bitrate streaming (HLS/DASH)
-- Seamless quality switching (aligned segments, same codec and framerate)
-- Playback speed control
-- Scalable microservices backend
-- Frontend for video playback (Next + hls.js)
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
-The backend is split into microservices written in **Go** and **Python** to leverage the strengths of each language.
+## 1. Think Before Coding
 
----
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
 
-## Tech Stack
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
 
-- **Backend (Go)**: API Gateway, Metadata Service, Upload Service, Analytics (future)
-- **Backend (Python)**: Auth Service, Transcoding Worker, Thumbnail Generation, Admin Panel (optional)
-- **Storage**: MinIO (S3-compatible)
-- **Database**: PostgreSQL
-- **Message Queue**: RabbitMQ or Redis Streams
-- **Streaming Server**: nginx with `nginx-vod-module` (or custom Go service if preferred)
-- **Transcoding**: FFmpeg
-- **Frontend**: Next + Vite + hls.js (or video.js)
-- **Containerization**: Docker, docker-compose
+## 2. Simplicity First
 
----
+**Minimum code that solves the problem. Nothing speculative.**
 
-## Repository Structure (Monorepo)
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
 
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
 ```
-.
-├── services/
-│   ├── gateway/               # Go (API Gateway)
-│   ├── metadata/              # Go (Metadata Service)
-│   ├── upload/                # Go (Upload Service)
-│   ├── auth/                  # Python (FastAPI or Django)
-│   ├── transcoder/            # Python (Celery worker)
-│   └── ... (others as needed)
-├── frontend/                  # Next app
-├── deploy/                    # Dockerfiles, docker-compose.yml, nginx configs
-├── docs/                      # Additional documentation
-├── scripts/                   # Utility scripts (dev setup, etc.)
-└── README.md
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
 ```
 
-Each service has its own `Dockerfile` and can be developed independently.
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
 ---
 
-## Microservices
-
-### 1. API Gateway (Go)
-- **Purpose**: Single entry point for client requests; routes to appropriate services; handles CORS, rate limiting, request aggregation.
-- **Framework**: Gin, Echo, or chi.
-- **Communication**: REST or gRPC to internal services.
-
-### 2. Metadata Service (Go)
-- **Purpose**: Manage video metadata (title, description, duration, available qualities, status, URLs).
-- **Database**: PostgreSQL.
-- **API**: CRUD for videos; internal endpoints for other services.
-
-### 3. Upload Service (Go)
-- **Purpose**: Accept video uploads from users, store raw files in MinIO, publish `video.uploaded` event to queue.
-- **Framework**: Go standard library or Gin.
-- **Key features**: Multipart upload, resumable uploads, progress tracking.
-
-### 4. Auth Service (Python)
-- **Purpose**: User authentication, JWT issuance, OAuth2 integration.
-- **Framework**: FastAPI (or Django + DRF).
-- **Database**: PostgreSQL (users, tokens).
-- **Communication**: Exposes `/auth/*` endpoints; other services validate JWT via middleware.
-
-### 5. Transcoding Worker (Python)
-- **Purpose**: Consume `video.uploaded` events, download original from MinIO, run FFmpeg to produce multiple renditions, upload results, publish `video.transcoded` event.
-- **Framework**: Celery with Redis/RabbitMQ broker.
-- **Key FFmpeg requirements**:
-  - Output formats: H.264/AAC in MP4 container.
-  - Multiple renditions (e.g., 360p, 720p, 1080p) with appropriate bitrates.
-  - **Aligned segments**: use `-force_key_frames "expr:gte(t,n_forced*2)"` (for 2s segments) and `-sc_threshold 0`.
-  - Ensure same framerate and codec across all renditions.
-  - For HLS packaging, either pre-segment or use nginx-vod's just-in-time mode (preferred: store single MP4 per rendition, let nginx-vod handle segmenting).
-- **Important**: Use `ffmpeg-python` or subprocess calls.
-
-### 6. Streaming Server (nginx-vod-module)
-- **Purpose**: Serve HLS/DASH manifests and segments directly from MinIO, with on-the-fly packaging.
-- **Configuration**: See `deploy/nginx/nginx.conf`.
-- **Alternative**: Custom Go service using `m3u8` library if nginx-vod is not desired.
-
-### 7. (Optional) Thumbnail Service (Python)
-- **Purpose**: Generate video thumbnails/posters via FFmpeg and Pillow.
-- **Can be merged into transcoding worker** or separate.
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
 ---
 
-## Development Setup
+## Project-Specific Guidelines — Flowix
 
-### Prerequisites
-- Docker and Docker Compose
-- Go 1.21+
-- Python 3.11+
-- Node.js 20+ (for frontend)
-- FFmpeg (for local testing)
+### Где логика проекта (ходи сюда для уточнения)
 
-### Starting the Stack
+- **ТЗ и архитектура (бывший AGENTS.md):** `docs/spec.md:1` — стек, структура монорепо, описание каждого микросервиса, FFmpeg-параметры, кодстайл, коммит-конвенции.
+- **Сервисы и пайплайн (на русском):** `docs/services-pipeline.md:1` — зачем каждый сервис (gateway/auth/metadata/upload/transcoder/nginx-vod/frontend) и полный пайплайн `upload → RabbitMQ → transcode → MinIO → HLS` с диаграммой и сценариями отладки.
+- **План по фазам:** `docs/PLAN.md:1` — 8 фаз, граф зависимостей, DDL `deploy/postgres/init.sql:1`, контракты событий `video.uploaded`/`video.transcoded`.
+- **Swagger / Zed:** `docs/SWAGGER.md:1`, `docs/ZED.md:1` — генерация OpenAPI для Go, настройки IDE.
+
+### Стек и структура (кратко)
+
+- **Go (chi `go-chi/chi/v5`):** `services/gateway`, `services/metadata`, `services/upload` — `golang:1.27-alpine`, `pgx`, `zerolog`, `amqp091-go`. Версионирование `/api/v1`.
+- **Python (FastAPI + Celery + uv):** `services/auth` (`src/main.py:1`), `services/transcoder` (`app/celery_app.py:1`, `app/tasks.py:1`) — `python:3.11-slim`, `uv`, `argon2`, `aiobotocore`, `ffmpeg-python`.
+- **Infra:** `deploy/docker-compose.yml:1` — `postgres:16-alpine :5432`, `minio/minio :9000/:9001`, `rabbitmq:3-management :5672/:15672`, `nginx-vod :8081`, `gateway :8080`, `frontend :3000`.
+- **Frontend:** `frontend/` — Next.js 14 App Router + `hls.js` + `zustand` + `tailwind`.
+- **Transcoding JIT:** храним 3 MP4/рип (360/720/1080) с `-force_key_frames "expr:gte(t,n_forced*2)"` и `-sc_threshold 0` (`docs/spec.md:82`), nginx-vod режет на сегменты.
+
+### Команды (via Makefile)
 
 ```bash
-# Clone repo
-git clone <repo-url>
-cd <project>
-
-# Copy environment template
 cp .env.example .env
-
-# Build and run all services
-docker-compose up --build
+make up        # docker compose --env-file .env -f deploy/docker-compose.yml up --build -d
+make logs && make ps
+make lint-py && make lint-go && make lint-front
+make fmt-py && make fmt-go
+make test-go && make test-py
+make swagger   # swag init для metadata+upload
+make e2e       # scripts/e2e.sh — upload→transcode→hls
 ```
 
-This will start:
-- MinIO on `:9000` (API) and `:9001` (console)
-- PostgreSQL on `:5432`
-- RabbitMQ on `:5672` (and management UI on `:15672`)
-- All microservices
-- nginx-vod on `:8080`
-- Frontend dev server on `:3000`
+Локально без Docker: `make dev-auth` (`:8001`), `make dev-transcoder` (Celery), `make dev-metadata` (`:8002`), `make dev-upload` (`:8003`), `make dev-gateway` (`:8080`), `make dev-frontend` (`:3000`).
 
-### Environment Variables
+### Кодстайл
 
-Refer to `.env.example` for all variables. Key ones:
-- `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`
-- `DATABASE_URL`
-- `RABBITMQ_URL`
-- `JWT_SECRET`
-- `VIDEO_STORAGE_BUCKET`
+- Go: `gofmt`, `golangci-lint`, DI, `context.Context`, `zerolog`, вешай `// @Summary` для Swagger.
+- Python: `black` (100), `flake8`, `mypy`, type hints обязательны, Pydantic для событий, `ruff --fix` в Zed.
+- Frontend: `eslint` + `prettier`, функц. компоненты, `zustand` (не Redux).
+- Тесты критичной логики обязательны; `docker-compose` для интеграционных.
 
----
+### Микросервис-гайд
 
-## Coding Conventions
+- Новый сервис → `services/<name>/` + `Dockerfile` + `go.mod`/`pyproject.toml` → допиши `deploy/docker-compose.yml:1` и `.env.example:1`.
+- Тяжёлую работу — в очередь (RabbitMQ/Celery), не в хэндлерах.
+- Меняешь контракт — обнови `.proto`/Pydantic/Go struct + `docs/spec.md:73` + README сервиса.
 
-### General
-- Use clear, descriptive names.
-- Add comments for complex logic.
-- Follow standard linting/formatting for each language:
-  - Go: `gofmt`, `golangci-lint`
-  - Python: `black`, `flake8`, `mypy`
-  - JavaScript: `eslint`, `prettier`
-- Write unit tests for critical business logic.
+### Коммиты — Conventional Commits
 
-### Go Services
-- Use `net/http` or a lightweight framework (Gin/Echo).
-- Prefer dependency injection.
-- Use `context.Context` properly for cancellation.
-- Structured logging (e.g., `zerolog` or `logrus`).
-- API routes should be versioned (`/api/v1/...`).
+`type(scope): short lower-case imperative` — см. `docs/spec.md:256`. Header ≤72, атомарно по scope (`auth`, `transcoder`, `gateway`, `metadata`, `upload`, `frontend`, `infra`, `docs`...), не мешай скоупы. Never commit `.env`, `__pycache__/`, `node_modules/`, `data/`, `tmp/`.
 
-### Python Services
-- Use FastAPI for new services; type hints are mandatory.
-- For Celery workers, define tasks in `tasks.py` and use Pydantic models for payloads.
-- Use `aiobotocore` for async MinIO operations if needed.
-- Logging: standard `logging` with JSON formatter in production.
+### Для ИИ-агентов в этом репо
 
-### Frontend
-- Use Next functional components and hooks.
-- State management: Next Context or Zustand (no Redux unless necessary).
-- hls.js integration as per official docs.
-- Keep components small and reusable.
-
----
-
-## Testing
-
-### Go
-```bash
-cd services/metadata
-go test ./...
-```
-
-### Python
-```bash
-cd services/transcoder
-pytest
-```
-
-### Integration Tests
-- Use docker-compose to spin up dependent services.
-- Write tests that simulate full video upload → transcode → stream pipeline.
-
----
-
-## Deployment Notes
-
-- Use Docker images for each service.
-- For production, consider using Kubernetes or a managed container platform.
-- Set up a CDN (CloudFront, Cloudflare) in front of the streaming server for global distribution.
-- Use horizontal scaling for stateless services; run multiple transcoding workers.
-
----
-
-## Common Commands
-
-### Build all Docker images
-```bash
-docker-compose build
-```
-
-### Run a specific service locally
-```bash
-cd services/metadata
-go run ./cmd/server
-```
-
-### Run transcoding worker locally (with hot reload)
-```bash
-cd services/transcoder
-celery -A app.celery worker --loglevel=info
-```
-
-### Run frontend dev server
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-### Lint and format
-```bash
-# Go
-gofmt -w .
-
-# Python
-black .
-flake8 .
-
-# Frontend
-npm run lint
-```
-
----
-
-## Guidelines for AI Agents
-
-- When modifying a service, check its `README.md` inside the service directory for specific instructions.
-- Always update tests when changing business logic.
-- Do not commit `.env` files or secrets.
-- Use `docker-compose` for integration testing; avoid relying on local installations of dependencies like PostgreSQL or MinIO.
-- If adding a new microservice, create a new directory under `services/`, include a `Dockerfile`, and update `docker-compose.yml`.
-- For video transcoding, adhere to the FFmpeg parameters mentioned to ensure seamless quality switching.
-- Use the message queue for asynchronous tasks; do not perform heavy processing inside API handlers.
-- Keep API contracts consistent; if using gRPC, update `.proto` files and generate code.
-- Document any new environment variables in `.env.example`.
-
----
-
-## Commit Conventions
-
-This repo follows **Conventional Commits** (https://www.conventionalcommits.org). Every commit message must be structured for auto-changelog and review.
-
-### Format
-
-```
-<type>(<scope>): <short description in imperative, lower case, no period>
-
-[optional body — what & why vs how]
-[optional footer — BREAKING CHANGE, Closes #123]
-```
-
-### Types
-
-| Type | When to use |
-|---|---|
-| `feat` | New feature / new service / new endpoint |
-| `fix` | Bug fix |
-| `docs` | Documentation only (`README`, `docs/`, `AGENTS.md`, service `README.md`) |
-| `chore` | Tooling, configs, scaffolding, deps, `Makefile`, `.gitignore`, `deploy/` infra without business logic |
-| `refactor` | Code restructuring without feature/fix |
-| `test` | Tests, `scripts/e2e.sh` |
-| `build` | Build system, `Dockerfile`, `docker-compose.yml` image changes |
-| `ci` | CI / GitHub Actions |
-| `perf` | Performance improvement |
-| `style` | Formatting / lint fixes only |
-
-### Scopes
-
-Use service or area name: `auth`, `transcoder`, `gateway`, `metadata`, `upload`, `frontend`, `infra`, `repo`, `docs`, `deps`, `zed`. Multiple scopes allowed: `feat(gateway,metadata): ...` or `chore(repo): ...`.
-
-If change touches many areas, omit scope: `chore: ...` or `docs: ...`.
-
-### Rules
-
-1. **Atomic commits** — one logical change per commit. Split large work: `infra` → `auth` → `transcoder` → `frontend` → `docs`, not one mega-commit.
-2. **Imperative mood, lower case, no period**: `feat(auth): add JWT refresh` ✅ / `Feat(Auth): Added refresh.` ❌
-3. **Header ≤72 chars**, body wrapped at 100 chars, explain *why* in body if not obvious.
-4. **Language**: English for `type(scope):`, body may be EN or RU (prefer EN). Keep history consistent.
-5. **Breaking changes**: footer `BREAKING CHANGE: ...` and use `feat!:` / `fix!:` if API/contract breaks.
-6. **Never commit**: `.env`, secrets, `__pycache__/`, `.venv/`, `node_modules/`, `data/`, `tmp/` — see `.gitignore:1`.
-7. **Update docs/tests together** with code when contract changes (README, `AGENTS.md`, `services/*/README.md`).
-
-### Examples
-
-```bash
-feat(auth): add JWT register/login with argon2
-feat(transcoder): implement celery worker with aligned FFmpeg segments
-feat(infra): add postgres/minio/rabbitmq compose with healthchecks
-chore(repo): init Makefile, .env.example and lint configs
-docs(plan): add 8-phase implementation plan
-fix(upload): handle multipart boundary error
-refactor(gateway): extract reverse proxy middleware
-test(e2e): add upload→transcode→hls pipeline check
-build(auth): switch Dockerfile to uv multi-stage
-```
-
-### Workflow for AI agents
-
-1. `git status --porcelain`, `git diff --stat` — inspect changes.
-2. Update `.gitignore` if new generated artifacts appear.
-3. Stage by logical group: `git add <scope-files>`.
-4. Commit with `type(scope):` following table above.
-5. Repeat until `git status` clean. Never mix unrelated scopes in one commit.
-
----
-
-## Resources
-
-- [nginx-vod-module documentation](https://github.com/kaltura/nginx-vod-module)
-- [hls.js API](https://github.com/video-dev/hls.js/blob/master/docs/API.md)
-- [FFmpeg HLS encoding guide](https://trac.ffmpeg.org/wiki/EncodingForStreamingSites)
-- [MinIO Python SDK](https://docs.min.io/docs/python-client-quickstart-guide.html)
-- [FastAPI documentation](https://fastapi.tiangolo.com/)
-```
-
-This AGENTS.md provides a clear overview of the project, architecture, and best practices for development and AI-assisted contributions.
+- Перед правкой сервиса — читай его `services/*/README.md:1` + `docs/services-pipeline.md:1`.
+- Обновляй тесты и доку вместе с кодом; новые env — в `.env.example:1`.
+- Следуй 4 принципам выше: думай → упрощай → хирургически → верифицируй (тест до/после).
