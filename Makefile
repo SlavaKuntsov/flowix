@@ -3,7 +3,7 @@
 # .env — единственный в корне, compose явно указывает на него (--env-file), deploy/.env не нужен
 COMPOSE=docker compose --env-file .env -f deploy/docker-compose.yml
 
-.PHONY: up down logs ps build lint fmt test e2e swagger swagger-install
+.PHONY: up down logs ps build lint fmt test e2e swagger swagger-install sync-py
 
 up:
 	$(COMPOSE) up --build -d
@@ -48,26 +48,31 @@ test-go:
 
 # Python (uv) — пути абсолютные из корня, т.к. uv --project не меняет cwd
 lint-py:
-	uv run --project services/auth black --check services/auth/src --target-version py311
-	uv run --project services/transcoder black --check services/transcoder/app --target-version py311
+	uv run --project services/auth black --check services/auth/src --target-version py314
+	uv run --project services/transcoder black --check services/transcoder/app --target-version py314
 	uv run --project services/auth flake8 services/auth/src
 	uv run --project services/transcoder flake8 services/transcoder/app
 	uv run --project services/auth mypy services/auth/src
 	uv run --project services/transcoder mypy services/transcoder/app
 
 fmt-py:
-	uv run --project services/auth black services/auth/src --target-version py311
-	uv run --project services/transcoder black services/transcoder/app --target-version py311
+	uv run --project services/auth black services/auth/src --target-version py314
+	uv run --project services/transcoder black services/transcoder/app --target-version py314
 	uv run --project services/auth ruff check --select I --fix services/auth/src 2>/dev/null || uv run --project services/auth isort services/auth/src 2>/dev/null || true
 
 fix-py:
 	uv run --project services/auth ruff check --fix services/auth/src 2>/dev/null || true
-	uv run --project services/auth black services/auth/src --target-version py311
-	uv run --project services/transcoder black services/transcoder/app --target-version py311
+	uv run --project services/auth black services/auth/src --target-version py314
+	uv run --project services/transcoder black services/transcoder/app --target-version py314
 
 test-py:
 	uv run --project services/auth pytest services/auth/tests -q
 	uv run --project services/transcoder pytest services/transcoder/tests -q
+
+# Python deps — uv sync для обоих сервисов (после изменения pyproject.toml / Python версии)
+sync-py:
+	uv sync --project services/auth
+	uv sync --project services/transcoder
 
 # local dev via uv / go (требует Go 1.27 локально, иначе используй docker compose up)
 dev-auth:

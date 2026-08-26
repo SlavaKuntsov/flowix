@@ -16,7 +16,7 @@ docker compose -f deploy/docker-compose.yml logs -f transcoder
 ## Линт / формат
 ```bash
 make lint-py  # проверяет и auth и transcoder
-uv run --project services/transcoder black --check services/transcoder/app --target-version py311
+uv run --project services/transcoder black --check services/transcoder/app --target-version py314
 uv run --project services/transcoder flake8 services/transcoder/app
 uv run --project services/transcoder mypy services/transcoder/app
 make fmt-py

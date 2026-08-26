@@ -20,7 +20,7 @@ curl http://localhost:8001/api/v1/auth/register -X POST -H "Content-Type: applic
 # Проверка (black + flake8 + mypy)
 make lint-py
 # Или детально:
-uv run --project services/auth black --check services/auth/src --target-version py311
+uv run --project services/auth black --check services/auth/src --target-version py314
 uv run --project services/auth flake8 services/auth/src
 uv run --project services/auth mypy services/auth/src
 uv run --project services/auth ruff check services/auth/src  # если установлен ruff
@@ -29,7 +29,7 @@ uv run --project services/auth ruff check services/auth/src  # если уста
 make fix-py        # ruff --fix + black
 make fmt-py        # только black
 uv run --project services/auth ruff check --select I --fix services/auth/src  # сортировка импортов
-uv run --project services/auth black services/auth/src --target-version py311
+uv run --project services/auth black services/auth/src --target-version py314
 ```
 
 ## Тесты
