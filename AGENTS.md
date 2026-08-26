@@ -80,7 +80,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ### Стек и структура (кратко)
 
 - **Go (chi `go-chi/chi/v5`):** `services/gateway`, `services/metadata`, `services/upload` — `golang:1.27-alpine`, `pgx`, `zerolog`, `amqp091-go`. Версионирование `/api/v1`.
-- **Python (FastAPI + Celery + uv):** `services/auth` (`src/main.py:1`), `services/transcoder` (`app/celery_app.py:1`, `app/tasks.py:1`) — `python:3.11-slim`, `uv`, `argon2`, `aiobotocore`, `ffmpeg-python`.
+- **Python (FastAPI + Celery + uv):** `services/auth` (`src/main.py:1`), `services/transcoder` (`app/celery_app.py:1`, `app/tasks.py:1`) — `python:3.14-slim`, `uv`, `argon2`, `aiobotocore`, `ffmpeg-python`.
 - **Infra:** `deploy/docker-compose.yml:1` — `postgres:16-alpine :5432`, `minio/minio :9000/:9001`, `rabbitmq:3-management :5672/:15672`, `nginx-vod :8081`, `gateway :8080`, `frontend :3000`.
 - **Frontend:** `frontend/` — Next.js 14 App Router + `hls.js` + `zustand` + `tailwind`.
 - **Transcoding JIT:** храним 3 MP4/рип (360/720/1080) с `-force_key_frames "expr:gte(t,n_forced*2)"` и `-sc_threshold 0` (`docs/spec.md:82`), nginx-vod режет на сегменты.

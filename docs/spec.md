@@ -101,7 +101,7 @@ Each service has its own `Dockerfile` and can be developed independently.
 ### Prerequisites
 - Docker and Docker Compose
 - Go 1.21+
-- Python 3.11+
+- Python 3.14+
 - Node.js 20+ (for frontend)
 - FFmpeg (for local testing)
 

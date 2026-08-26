@@ -3,7 +3,7 @@
 > YouTube-like MVP with adaptive HLS, JIT transcoding and microservices architecture
 
 [![Go](https://img.shields.io/badge/Go-1.23-%2300ADD8?logo=go)](https://go.dev)
-[![Python](https://img.shields.io/badge/Python-3.11-%233770A8?logo=python)](https://www.python.org)
+[![Python](https://img.shields.io/badge/Python-3.14-%233770A8?logo=python)](https://www.python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.11-%23009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Next.js](https://img.shields.io/badge/Next.js-14-black?logo=next.js)](https://nextjs.org)
 [![Docker](https://img.shields.io/badge/Docker-Compose-%232496ED?logo=docker)](deploy/docker-compose.yml)
@@ -42,7 +42,7 @@
 | Layer | Tech |
 |-------|------|
 | Gateway / Metadata / Upload | Go 1.23, `go-chi/chi/v5`, `pgx`, `zerolog`, `amqp091-go` |
-| Auth / Transcoder | Python 3.11, FastAPI, Celery, `uv`, `argon2`, `aiobotocore`, `ffmpeg-python` |
+| Auth / Transcoder | Python 3.14, FastAPI, Celery, `uv`, `argon2`, `aiobotocore`, `ffmpeg-python` |
 | Infra | Postgres 16, MinIO, RabbitMQ 3, `nginx-vod-module`, FFmpeg |
 | Frontend | Next.js 14, `hls.js` 1.5, `zustand` 4, Tailwind |
 | Tooling | Docker Compose, `golangci-lint`, `black`/`ruff`/`mypy`, `eslint`/`prettier` |
