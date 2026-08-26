@@ -48,7 +48,8 @@
     "pyright": {
       "settings": {
         "python.analysis.typeCheckingMode": "basic",
-        "python.analysis.diagnosticMode": "workspace"
+        "python.analysis.diagnosticMode": "workspace",
+        "python.analysis.extraPaths": ["services/auth", "services/transcoder"]
       }
     },
     "gopls": {

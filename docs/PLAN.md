@@ -78,7 +78,7 @@ CREATE TABLE video_renditions (video_id UUID REFERENCES videos(id) ON DELETE CAS
 
 ## Фаза 2a — Auth Service (Python, FastAPI) `AGENTS.md:70-75`
 
-**Структура:** `services/auth/src/{main.py, routers/auth.py, models.py, schemas.py, core/{security.py,config.py}}`, `pyproject.toml`, `Dockerfile` `python:3.11-slim`
+**Структура:** `services/auth/src/{main.py, routers/auth.py, models.py, schemas.py, core/{security.py,config.py}}`, `pyproject.toml`, `Dockerfile` `python:3.14-slim`
 
 **Эндпоинты:** `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `GET /api/v1/auth/me` (защищен)
 
@@ -111,7 +111,7 @@ CREATE TABLE video_renditions (video_id UUID REFERENCES videos(id) ON DELETE CAS
 
 ## Фаза 4 — Transcoder Worker (Celery + RabbitMQ) `AGENTS.md:76-85`
 
-**Структура:** `services/transcoder/app/{celery_app.py,tasks.py,schemas.py,minio_client.py}`, `Dockerfile` `python:3.11 + ffmpeg`
+**Структура:** `services/transcoder/app/{celery_app.py,tasks.py,schemas.py,minio_client.py}`, `Dockerfile` `python:3.14 + ffmpeg`
 
 **Воркер:**
 `consume video.uploaded → download raw → ffprobe (fps/duration) → 3× ffmpeg параллельно → upload renditions/{id}/{360,720,1080}.mp4 → PATCH metadata ready → publish video.transcoded`

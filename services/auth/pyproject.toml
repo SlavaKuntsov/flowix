@@ -2,7 +2,7 @@
 name = "flowix-auth"
 version = "0.1.0"
 description = "Flowix Auth Service — FastAPI + JWT"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
   "fastapi>=0.115,<0.116",
   "uvicorn[standard]>=0.34,<0.35",
@@ -30,11 +30,11 @@ dev = [
 
 [tool.black]
 line-length = 100
-target-version = ["py311"]
+target-version = ["py314"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
@@ -44,7 +44,7 @@ ignore = ["E501"]
 known-first-party = ["src"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 strict = false
 ignore_missing_imports = true
 disable_error_code = ["import-untyped", "import-not-found", "import"]

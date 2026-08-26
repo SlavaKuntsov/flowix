@@ -12,8 +12,16 @@ T4 cumulative pipeline — T1 → T1+T2 → T1+T2+T3 → T1+T2+T3+T4 без Dock
 """
 
 import json
+import sys
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+ROOT = Path(__file__).resolve().parents[1]
+for _p in (ROOT / "services/auth", ROOT / "services/transcoder"):
+    _s = str(_p)
+    if _s not in sys.path:
+        sys.path.insert(0, _s)
 
 from fastapi.testclient import TestClient  # type: ignore[import-untyped]
 

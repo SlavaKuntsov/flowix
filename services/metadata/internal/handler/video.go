@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"flowix/metadata/internal/middleware"
@@ -42,6 +43,7 @@ func (h *VideoHandler) Register(r chi.Router) {
 	// internal (no auth) for transcoder/upload
 	r.Patch("/internal/videos/{id}/status", h.UpdateStatus)
 	r.Get("/internal/videos/{id}", h.GetInternal)
+	r.Get("/internal/videos/{id}/vod", h.GetVODMapping)
 }
 
 // Create godoc
@@ -102,6 +104,39 @@ func (h *VideoHandler) Get(w http.ResponseWriter, r *http.Request) {
 // @Router /internal/videos/{id} [get]
 func (h *VideoHandler) GetInternal(w http.ResponseWriter, r *http.Request) {
 	h.Get(w, r)
+}
+
+type vodMapping struct {
+	Sequences []vodSequence `json:"sequences"`
+}
+
+type vodSequence struct {
+	Clips []vodClip `json:"clips"`
+}
+
+type vodClip struct {
+	Type string `json:"type"`
+	Path string `json:"path"`
+}
+
+// GetVODMapping returns the nginx-vod mapped-mode representation for a ready video.
+func (h *VideoHandler) GetVODMapping(w http.ResponseWriter, r *http.Request) {
+	v, err := h.repo.GetByID(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || v.Status != model.StatusReady || len(v.Renditions) != 3 {
+		writeError(w, r, http.StatusNotFound, "video not ready")
+		return
+	}
+
+	rends := append([]model.Rendition(nil), v.Renditions...)
+	sort.Slice(rends, func(i, j int) bool { return rends[i].Bitrate < rends[j].Bitrate })
+	mapping := vodMapping{Sequences: make([]vodSequence, 0, len(rends))}
+	for _, rendition := range rends {
+		mapping.Sequences = append(mapping.Sequences, vodSequence{Clips: []vodClip{{
+			Type: "source",
+			Path: "/" + rendition.S3Key,
+		}}})
+	}
+	writeJSON(w, r, http.StatusOK, mapping)
 }
 
 // List godoc

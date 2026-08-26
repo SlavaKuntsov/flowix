@@ -1,0 +1,4 @@
+{
+  "typeCheckingMode": "basic",
+  "extraPaths": ["services/auth", "services/transcoder"]
+}

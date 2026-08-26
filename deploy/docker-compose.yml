@@ -63,16 +63,16 @@ services:
       interval: 10s
       retries: 10
 
-  # Placeholder nginx-vod — replaced with custom build in Phase 5
+  # Phase 5: nginx-vod JIT (kaltura/nginx-vod-module) — maps 3 MP4s to HLS via MinIO
   nginx-vod:
-    image: nginx:alpine
+    build: ./nginx
     depends_on:
       minio:
         condition: service_healthy
+      metadata:
+        condition: service_started
     ports:
       - "${NGINX_VOD_PORT:-8081}:80"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:80/health"]
       interval: 10s
