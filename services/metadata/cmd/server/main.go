@@ -86,6 +86,7 @@ func main() {
 	// internal (no auth)
 	r.Patch("/internal/videos/{id}/status", vh.UpdateStatus)
 	r.Get("/internal/videos/{id}", vh.GetInternal)
+	r.Get("/internal/videos/{id}/vod", vh.GetVODMapping)
 
 	log.Printf("metadata listening :%s", port)
 	if err := http.ListenAndServe(":"+port, r); err != nil {

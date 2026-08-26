@@ -115,6 +115,7 @@ func testRouter(store VideoStore) chi.Router {
 	r.Get("/api/v1/videos/{id}", vh.Get)
 	r.Patch("/internal/videos/{id}/status", vh.UpdateStatus)
 	r.Get("/internal/videos/{id}", vh.GetInternal)
+	r.Get("/internal/videos/{id}/vod", vh.GetVODMapping)
 	return r
 }
 
@@ -282,5 +283,30 @@ func TestUpdateStatusInternal(t *testing.T) {
 	}
 	if len(store.videos["vid-1"].Renditions) != 1 {
 		t.Fatalf("want renditions 1 got %d", len(store.videos["vid-1"].Renditions))
+	}
+}
+
+func TestGetVODMapping(t *testing.T) {
+	store := newFake()
+	store.videos["vid-1"] = &model.Video{
+		ID: "vid-1", Status: model.StatusReady,
+		Renditions: []model.Rendition{
+			{Quality: "1080p", Bitrate: 5000, S3Key: "renditions/vid-1/1080p.mp4"},
+			{Quality: "360p", Bitrate: 800, S3Key: "renditions/vid-1/360p.mp4"},
+			{Quality: "720p", Bitrate: 2500, S3Key: "renditions/vid-1/720p.mp4"},
+		},
+	}
+	r := testRouter(store)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/internal/videos/vid-1/vod", nil))
+	if w.Code != 200 {
+		t.Fatalf("want 200 got %d: %s", w.Code, w.Body.String())
+	}
+	var got vodMapping
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Sequences) != 3 || got.Sequences[0].Clips[0].Path != "/renditions/vid-1/360p.mp4" {
+		t.Fatalf("unexpected mapping: %+v", got)
 	}
 }
