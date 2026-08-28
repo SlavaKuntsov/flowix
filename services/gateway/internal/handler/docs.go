@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -138,6 +139,10 @@ func (h *DocsHandler) HandleMerged(w http.ResponseWriter, r *http.Request) {
 		mergeSecurityDefinitions(schemes, uploadDoc)
 	}
 
+	// Swagger 2.0 использует #/definitions/..., OAS3 — #/components/schemas/...
+	// После mergeDefinitionsToSchemas $ref остаются битыми -> переписываем рекурсивно
+	rewriteRefs(merged)
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
@@ -250,5 +255,24 @@ func mergeSecurityDefinitions(dst map[string]interface{}, src map[string]interfa
 			}
 		}
 		dst[k] = v
+	}
+}
+
+func rewriteRefs(v interface{}) {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		for k, val := range x {
+			if k == "$ref" {
+				if s, ok := val.(string); ok && strings.HasPrefix(s, "#/definitions/") {
+					x[k] = strings.Replace(s, "#/definitions/", "#/components/schemas/", 1)
+				}
+			} else {
+				rewriteRefs(val)
+			}
+		}
+	case []interface{}:
+		for _, e := range x {
+			rewriteRefs(e)
+		}
 	}
 }
