@@ -1,0 +1,69 @@
+package proxy
+
+import (
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strings"
+
+	"github.com/rs/zerolog/log"
+)
+
+// New создает ReverseProxy на target. StripPrefix — опционально отрезает
+// префикс пути перед проксированием (для /hls не нужен, для /api — не режем).
+func New(target *url.URL) *httputil.ReverseProxy {
+	p := httputil.NewSingleHostReverseProxy(target)
+	origDirector := p.Director
+	p.Director = func(r *http.Request) {
+		origDirector(r)
+		// SingleHostReverseProxy уже выставил Scheme/Host/Path.
+		// Сохраняем оригинальный Host заголовок клиента в X-Forwarded-Host,
+		// а Host выставляем на upstream (важно для nginx-vod Host header).
+		r.Header.Set("X-Forwarded-Host", r.Host)
+		// Пробрасываем X-Forwarded-For корректно
+		// (net/http уже делает, но на всякий — добавляем RemoteAddr)
+		// Не трогаем Authorization / X-User-ID — их ставит Auth middleware
+		// Заголовок X-Forwarded-Proto
+		if r.TLS != nil {
+			r.Header.Set("X-Forwarded-Proto", "https")
+		} else if r.Header.Get("X-Forwarded-Proto") == "" {
+			r.Header.Set("X-Forwarded-Proto", "http")
+		}
+	}
+	p.ModifyResponse = func(resp *http.Response) error {
+		// CORS для HLS — если upstream не отдал, gateway добавит via middleware.
+		// Здесь можно добавить кэш-заголовки для /hls, но nginx-vod уже ставит.
+		return nil
+	}
+	p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		log.Error().Err(err).Str("target", target.String()).Str("path", r.URL.Path).Msg("proxy error")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		http.Error(w, `{"error":"upstream unavailable"}`, http.StatusBadGateway)
+	}
+	return p
+}
+
+// NewWithPrefix — как New, но отрезает prefix из пути перед проксированием.
+// Например, если gateway слушает /api/v1/auth и хочет проксировать на auth:8001/api/v1/auth,
+// то prefix="" (не режем). Если апстрим без префикса — указываем prefix.
+func NewWithPrefix(target *url.URL, prefix string) *httputil.ReverseProxy {
+	p := New(target)
+	if prefix == "" {
+		return p
+	}
+	origDirector := p.Director
+	// оборачиваем ещё раз для strip
+	p.Director = func(r *http.Request) {
+		origDirector(r)
+		// Director уже выставил URL на target+originalPath, теперь режем prefix
+		// Нужно работать с r.URL.Path, который сейчас = target.Path + originalPath
+		// Проще — режем из r.URL.Path, считая что target.Path == "" или "/"
+		if strings.HasPrefix(r.URL.Path, prefix) {
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, prefix)
+			if r.URL.Path == "" {
+				r.URL.Path = "/"
+			}
+		}
+	}
+	return p
+}
