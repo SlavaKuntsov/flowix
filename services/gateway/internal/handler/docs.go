@@ -1,3 +1,4 @@
+// Package handler provides HTTP handlers for gateway documentation.
 package handler
 
 import (

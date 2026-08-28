@@ -1,3 +1,4 @@
+// Package proxy provides reverse-proxy helpers for gateway upstream services.
 package proxy
 
 import (
@@ -31,8 +32,17 @@ func New(target *url.URL) *httputil.ReverseProxy {
 		}
 	}
 	p.ModifyResponse = func(resp *http.Response) error {
-		// CORS для HLS — если upstream не отдал, gateway добавит via middleware.
-		// Здесь можно добавить кэш-заголовки для /hls, но nginx-vod уже ставит.
+		// Strip upstream CORS headers — gateway is sole CORS authority.
+		// Without this, upstream like auth (if it ever adds CORS) + gateway
+		// produce duplicate `Access-Control-Allow-Origin: http://localhost:3000, *`
+		// which browser rejects.
+		resp.Header.Del("Access-Control-Allow-Origin")
+		resp.Header.Del("Access-Control-Allow-Credentials")
+		resp.Header.Del("Access-Control-Allow-Methods")
+		resp.Header.Del("Access-Control-Allow-Headers")
+		resp.Header.Del("Access-Control-Expose-Headers")
+		resp.Header.Del("Access-Control-Max-Age")
+		resp.Header.Del("Vary")
 		return nil
 	}
 	p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {

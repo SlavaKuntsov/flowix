@@ -1,3 +1,4 @@
+// Package middleware provides HTTP middleware for gateway authentication.
 package middleware
 
 import (

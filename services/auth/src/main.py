@@ -1,16 +1,11 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from .routers.auth import router
 
 app = FastAPI(title="flowix-auth", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS handled by gateway (single entry point) to avoid duplicate
+# Access-Control-Allow-Origin headers (gateway sets origin, upstream must not).
+# Auth is behind gateway; direct :8001 access is internal/Swagger only.
 app.include_router(router)
 
 
