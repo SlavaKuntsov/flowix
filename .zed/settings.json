@@ -42,6 +42,11 @@
       "code_actions_on_format": {
         "source.fixAll.eslint": true
       }
+    },
+    "CSS": {
+      "language_servers": ["tailwindcss-language-server", "vscode-css-language-server"],
+      "formatter": "language_server",
+      "format_on_save": "off"
     }
   },
   "lsp": {
@@ -81,6 +86,19 @@
     "eslint": {
       "settings": {
         "useFlatConfig": true
+      }
+    },
+    "tailwindcss-language-server": {
+      "settings": {
+        "tailwindCSS": {
+          "emmetCompletions": true
+        }
+      }
+    },
+    "vscode-css-language-server": {
+      "settings": {
+        "css": { "lint": { "unknownAtRules": "ignore" } },
+        "scss": { "lint": { "unknownAtRules": "ignore" } }
       }
     }
   },
