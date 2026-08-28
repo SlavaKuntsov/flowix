@@ -92,6 +92,16 @@ func (f *fakeStore) UpdateStatus(_ context.Context, id string, status model.Vide
 	v.Renditions = renditions
 	return nil
 }
+func (f *fakeStore) UpdateThumbnail(_ context.Context, id string, thumbnailS3Key string) error {
+	v, ok := f.videos[id]
+	if !ok {
+		return errNotFound()
+	}
+	v.ThumbnailS3Key = &thumbnailS3Key
+	u := "/thumbnails/" + id + "/thumb.jpg"
+	v.ThumbnailURL = &u
+	return nil
+}
 
 func errNotFound() error  { return &fakeErr{"not found"} }
 func errForbidden() error { return &fakeErr{"forbidden"} }

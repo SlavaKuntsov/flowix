@@ -1,8 +1,8 @@
 "use client";
-import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
-import { getVideo, getHlsUrl, type Video } from "@/lib/api";
 import VideoPlayer from "@/components/VideoPlayer";
+import { getHlsUrl, getVideo, type Video } from "@/lib/api";
+import { useParams } from "next/navigation";
+import { useEffect, useState } from "react";
 
 export default function WatchPage() {
   const { id } = useParams<{ id: string }>();
@@ -44,8 +44,10 @@ export default function WatchPage() {
   const hlsReady = video.status === "ready";
 
   return (
-    <div className="grid gap-6 lg:grid-cols-3">
-      <div className="lg:col-span-2">
+    // <div className="grid gap-6 lg:grid-cols-3">
+    // <div className="lg:col-span-2">
+    <div className="flex flex-col gap-6">
+      <div className="">
         {hlsReady ? (
           <VideoPlayer src={getHlsUrl(video.id)} />
         ) : (

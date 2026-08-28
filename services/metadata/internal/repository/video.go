@@ -18,21 +18,29 @@ func NewVideoRepo(pool *pgxpool.Pool) *VideoRepo { return &VideoRepo{pool: pool}
 
 func (r *VideoRepo) Create(ctx context.Context, ownerID, title, description string) (*model.Video, error) {
 	id := uuid.New().String()
-	q := `INSERT INTO videos (id, owner_id, title, description, status) VALUES ($1,$2,$3,$4,'uploaded') RETURNING id, owner_id, title, description, duration, status, created_at`
+	q := `INSERT INTO videos (id, owner_id, title, description, status) VALUES ($1,$2,$3,$4,'uploaded') RETURNING id, owner_id, title, description, duration, status, thumbnail_s3_key, created_at`
 	v := &model.Video{}
-	err := r.pool.QueryRow(ctx, q, id, ownerID, title, description).Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.CreatedAt)
+	err := r.pool.QueryRow(ctx, q, id, ownerID, title, description).Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.ThumbnailS3Key, &v.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create video: %w", err)
+	}
+	if v.ThumbnailS3Key != nil {
+		u := "/thumbnails/" + v.ID + "/thumb.jpg"
+		v.ThumbnailURL = &u
 	}
 	return v, nil
 }
 
 func (r *VideoRepo) GetByID(ctx context.Context, id string) (*model.Video, error) {
-	q := `SELECT id, owner_id, title, description, duration, status, created_at FROM videos WHERE id=$1`
+	q := `SELECT id, owner_id, title, description, duration, status, thumbnail_s3_key, created_at FROM videos WHERE id=$1`
 	v := &model.Video{}
-	err := r.pool.QueryRow(ctx, q, id).Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.CreatedAt)
+	err := r.pool.QueryRow(ctx, q, id).Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.ThumbnailS3Key, &v.CreatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if v.ThumbnailS3Key != nil {
+		u := "/thumbnails/" + v.ID + "/thumb.jpg"
+		v.ThumbnailURL = &u
 	}
 	// renditions
 	rq := `SELECT video_id, quality, bitrate, width, height, s3_key FROM video_renditions WHERE video_id=$1`
@@ -51,7 +59,7 @@ func (r *VideoRepo) GetByID(ctx context.Context, id string) (*model.Video, error
 }
 
 func (r *VideoRepo) List(ctx context.Context, limit, offset int) ([]model.Video, error) {
-	q := `SELECT id, owner_id, title, description, duration, status, created_at FROM videos ORDER BY created_at DESC LIMIT $1 OFFSET $2`
+	q := `SELECT id, owner_id, title, description, duration, status, thumbnail_s3_key, created_at FROM videos ORDER BY created_at DESC LIMIT $1 OFFSET $2`
 	rows, err := r.pool.Query(ctx, q, limit, offset)
 	if err != nil {
 		return nil, err
@@ -60,7 +68,11 @@ func (r *VideoRepo) List(ctx context.Context, limit, offset int) ([]model.Video,
 	var out []model.Video
 	for rows.Next() {
 		var v model.Video
-		if err := rows.Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.CreatedAt); err == nil {
+		if err := rows.Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.ThumbnailS3Key, &v.CreatedAt); err == nil {
+			if v.ThumbnailS3Key != nil {
+				u := "/thumbnails/" + v.ID + "/thumb.jpg"
+				v.ThumbnailURL = &u
+			}
 			out = append(out, v)
 		}
 	}
@@ -100,6 +112,11 @@ func (r *VideoRepo) Delete(ctx context.Context, id, ownerID string) error {
 		return fmt.Errorf("forbidden")
 	}
 	_, err = r.pool.Exec(ctx, `DELETE FROM videos WHERE id=$1`, id)
+	return err
+}
+
+func (r *VideoRepo) UpdateThumbnail(ctx context.Context, id string, thumbnailS3Key string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE videos SET thumbnail_s3_key=$1 WHERE id=$2`, thumbnailS3Key, id)
 	return err
 }
 

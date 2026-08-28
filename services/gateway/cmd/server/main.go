@@ -48,11 +48,16 @@ func main() {
 	metadataTarget := mustParseURL(metadataURL)
 	uploadTarget := mustParseURL(uploadURL)
 	vodTarget := mustParseURL(vodURL)
+	bucket := envOr("VIDEO_STORAGE_BUCKET", "videos")
+	minioURL := envOr("MINIO_URL", "http://minio:9000/"+bucket)
+	minioTarget := mustParseURL(minioURL)
 
 	authProxy := proxy.New(authTarget)
 	metadataProxy := proxy.New(metadataTarget)
 	uploadProxy := proxy.New(uploadTarget)
 	vodProxy := proxy.New(vodTarget)
+	// thumbnails/renditions are stored in MinIO bucket `videos`; gateway exposes /thumbnails/* via MinIO
+	minioProxy := proxy.New(minioTarget)
 
 	r := chi.NewRouter()
 	// базовые chi middleware
@@ -108,6 +113,11 @@ func main() {
 	// --- HLS / VOD: публичный, прокси на nginx-vod (JIT) ---
 	// nginx-vod отдаёт master.m3u8 и сегменты; кэш заголовки ставит сам.
 	r.Handle("/hls/*", vodProxy)
+
+	// --- Thumbnails / public MinIO objects via gateway (avoid direct :9000 CORS) ---
+	// frontend uses /thumbnails/{id}/thumb.jpg ; gateway proxies to MinIO bucket `videos`
+	r.Handle("/thumbnails/*", minioProxy)
+	r.Handle("/thumbnails", minioProxy)
 
 	logger.Info().
 		Str("port", port).

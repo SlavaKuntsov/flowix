@@ -11,6 +11,8 @@ export default function VideoPlayer({ src, poster }: { src: string; poster?: str
   const [error, setError] = useState<string | null>(null);
   const [levels, setLevels] = useState<{ index: number; height: number; bitrate: number }[]>([]);
   const [currentLevel, setCurrentLevel] = useState<number>(-1); // -1 = auto
+  const [pendingLevel, setPendingLevel] = useState<number | null>(null);
+  const [actualLevel, setActualLevel] = useState<number>(-1);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -32,6 +34,10 @@ export default function VideoPlayer({ src, poster }: { src: string; poster?: str
     const hls = new Hls({
       enableWorker: true,
       lowLatencyMode: false,
+      // faster quality switch: keep buffer short so next segment loads quicker
+      maxBufferLength: 10,
+      maxMaxBufferLength: 15,
+      liveSyncDurationCount: 2,
     });
     hls.loadSource(src);
     hls.attachMedia(video);
@@ -40,8 +46,12 @@ export default function VideoPlayer({ src, poster }: { src: string; poster?: str
       setLevels(lvls);
       video.play().catch(() => {});
     });
-    hls.on(Hls.Events.LEVEL_SWITCHED, () => {
-      // keep in sync when auto switches (no-op, UI shows currentLevel selector)
+    hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
+      setActualLevel(data.level);
+      setPendingLevel(null);
+    });
+    hls.on(Hls.Events.LEVEL_SWITCHING, (_e, data) => {
+      // optional: could set pending here too
     });
     hls.on(Hls.Events.ERROR, (_e, data) => {
       if (data.fatal) {
@@ -65,12 +75,17 @@ export default function VideoPlayer({ src, poster }: { src: string; poster?: str
 
   const handleQuality = (idx: number) => {
     setCurrentLevel(idx);
+    setPendingLevel(idx);
     const video = videoRef.current as unknown as { _hls?: Hls } | null;
     const hls = video?._hls;
     if (hls) {
+      // hls.js 1.x: nextLevel is the preferred API, currentLevel also works but we set both for compat
+      (hls as unknown as { nextLevel: number }).nextLevel = idx;
       hls.currentLevel = idx;
-      // if auto, set -1
-      if (idx === -1) hls.currentLevel = -1;
+      // clear pending after segment duration (fallback if LEVEL_SWITCHED not fired)
+      setTimeout(() => setPendingLevel((p) => (p === idx ? null : p)), 2500);
+    } else {
+      setPendingLevel(null);
     }
   };
 
@@ -103,15 +118,15 @@ export default function VideoPlayer({ src, poster }: { src: string; poster?: str
               onClick={() => handleQuality(-1)}
               className={`rounded px-2 py-1 ${currentLevel === -1 ? "bg-white text-black" : "bg-zinc-800 hover:bg-zinc-700"}`}
             >
-              Auto
+              Auto{pendingLevel === -1 ? "…" : ""}
             </button>
             {levels.map((l) => (
               <button
                 key={l.index}
                 onClick={() => handleQuality(l.index)}
-                className={`rounded px-2 py-1 ${currentLevel === l.index ? "bg-white text-black" : "bg-zinc-800 hover:bg-zinc-700"}`}
+                className={`rounded px-2 py-1 ${currentLevel === l.index ? "bg-white text-black" : "bg-zinc-800 hover:bg-zinc-700"} ${pendingLevel === l.index ? "animate-pulse ring-1 ring-white" : ""}`}
               >
-                {l.height}p
+                {l.height}p{pendingLevel === l.index ? "…" : actualLevel === l.index && currentLevel !== -1 ? " ●" : ""}
               </button>
             ))}
           </>

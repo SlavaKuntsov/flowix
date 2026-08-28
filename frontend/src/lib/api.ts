@@ -35,8 +35,23 @@ export interface Video {
   description: string;
   duration?: number | null;
   status: VideoStatus;
+  thumbnail_s3_key?: string | null;
+  thumbnail_url?: string | null;
   created_at: string;
   renditions?: Rendition[];
+}
+
+export function getThumbnailUrl(video: Video): string | null {
+  if (video.thumbnail_url) {
+    const b = hlsBase();
+    // thumbnail_url is like /thumbnails/{id}/thumb.jpg (gateway)
+    if (video.thumbnail_url.startsWith("/")) return `${b}${video.thumbnail_url}`;
+    return video.thumbnail_url;
+  }
+  if (video.thumbnail_s3_key) {
+    return `${hlsBase()}/${video.thumbnail_s3_key}`;
+  }
+  return null;
 }
 
 interface ListResponse {

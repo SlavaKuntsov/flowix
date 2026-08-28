@@ -22,6 +22,7 @@ type VideoStore interface {
 	Update(ctx context.Context, id, ownerID string, req model.UpdateVideoRequest) (*model.Video, error)
 	Delete(ctx context.Context, id, ownerID string) error
 	UpdateStatus(ctx context.Context, id string, status model.VideoStatus, renditions []model.Rendition) error
+	UpdateThumbnail(ctx context.Context, id string, thumbnailS3Key string) error
 }
 
 type VideoHandler struct {
@@ -247,6 +248,18 @@ func (h *VideoHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		slog.Error("update status failed", "error", err, "video_id", id)
 		writeError(w, r, http.StatusInternalServerError, "internal error")
 		return
+	}
+	// optional thumbnail (sent by transcoder)
+	thumbKey := ""
+	if req.ThumbnailS3Key != nil {
+		thumbKey = *req.ThumbnailS3Key
+	} else if req.ThumbnailURL != nil {
+		thumbKey = *req.ThumbnailURL
+	}
+	if thumbKey != "" {
+		if err := h.repo.UpdateThumbnail(r.Context(), id, thumbKey); err != nil {
+			slog.Error("update thumbnail failed", "error", err, "video_id", id)
+		}
 	}
 	writeJSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
 }

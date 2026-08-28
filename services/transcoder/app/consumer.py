@@ -40,11 +40,13 @@ def get_minio():
     )
 
 
-def update_status(video_id: str, status: str, renditions=None):
+def update_status(video_id: str, status: str, renditions=None, thumbnail_s3_key: str | None = None):
     url = f"{METADATA_URL}/internal/videos/{video_id}/status"
     payload: dict = {"status": status}
     if renditions:
         payload["renditions"] = renditions
+    if thumbnail_s3_key:
+        payload["thumbnail_s3_key"] = thumbnail_s3_key
     try:
         r = requests.patch(url, json=payload, timeout=5)
         r.raise_for_status()
@@ -221,6 +223,7 @@ def process_message(body: bytes):
                 raise errors[0]
 
             # thumbnail (non-blocking for ready, but upload if exists)
+            thumb_key: str | None = None
             thumb_path = os.path.join(tmp, "thumb.jpg")
             transcode_thumbnail(raw_path, thumb_path)
             if os.path.exists(thumb_path):
@@ -230,6 +233,7 @@ def process_message(body: bytes):
                     log.info("uploaded thumbnail %s", thumb_key)
                 except Exception as e:
                     log.warning("thumbnail upload failed: %s", e)
+                    thumb_key = None
 
             # upload renditions
             renditions = []
@@ -247,7 +251,7 @@ def process_message(body: bytes):
         update_status(video_id, "failed")
         return
 
-    update_status(video_id, "ready", renditions)
+    update_status(video_id, "ready", renditions, thumb_key)
 
 
 def main():

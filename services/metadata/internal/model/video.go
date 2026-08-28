@@ -12,14 +12,16 @@ const (
 )
 
 type Video struct {
-	ID          string      `json:"id"`
-	OwnerID     string      `json:"owner_id"`
-	Title       string      `json:"title"`
-	Description string      `json:"description"`
-	Duration    *int        `json:"duration,omitempty"`
-	Status      VideoStatus `json:"status"`
-	CreatedAt   time.Time   `json:"created_at"`
-	Renditions  []Rendition `json:"renditions,omitempty"`
+	ID             string      `json:"id"`
+	OwnerID        string      `json:"owner_id"`
+	Title          string      `json:"title"`
+	Description    string      `json:"description"`
+	Duration       *int        `json:"duration,omitempty"`
+	Status         VideoStatus `json:"status"`
+	ThumbnailS3Key *string     `json:"thumbnail_s3_key,omitempty"`
+	ThumbnailURL   *string     `json:"thumbnail_url,omitempty"`
+	CreatedAt      time.Time   `json:"created_at"`
+	Renditions     []Rendition `json:"renditions,omitempty"`
 }
 
 type Rendition struct {
@@ -42,6 +44,8 @@ type UpdateVideoRequest struct {
 }
 
 type UpdateStatusRequest struct {
-	Status     VideoStatus `json:"status"`
-	Renditions []Rendition `json:"renditions"`
+	Status         VideoStatus `json:"status"`
+	Renditions     []Rendition `json:"renditions"`
+	ThumbnailS3Key *string     `json:"thumbnail_s3_key,omitempty"`
+	ThumbnailURL   *string     `json:"thumbnail_url,omitempty"` // alias for thumbnail_s3_key
 }

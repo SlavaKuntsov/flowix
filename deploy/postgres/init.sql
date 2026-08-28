@@ -20,8 +20,11 @@ CREATE TABLE IF NOT EXISTS videos (
   description TEXT DEFAULT '',
   duration INT,
   status video_status NOT NULL DEFAULT 'uploaded',
+  thumbnail_s3_key TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- thumbnail for VideoCard preview (added Phase 7 fix)
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_s3_key TEXT;
 
 CREATE TABLE IF NOT EXISTS video_renditions (
   video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
