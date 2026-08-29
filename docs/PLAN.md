@@ -48,8 +48,8 @@
 ### Фаза 0 — Фундамент монорепо ✅
 Скелет `services/gateway|metadata|upload|auth|transcoder`, `frontend/`, `deploy/docker-compose.yml` (postgres:16 :5432, minio :9000/:9001, rabbitmq :15672, nginx-vod :8081), `.env.example`, `Makefile`. Проверка: `make up && make ps`.
 
-### Фаза 1 — Контракты и БД ✅
-`deploy/postgres/init.sql:1` — `video_status ENUM`, `users`, `videos (thumbnail_s3_key)`, `video_renditions`, `S3 events video.uploaded/video.transcoded` (`docs/PLAN.md:73` old).
+### Фаза 1 — Контракты и БД ✅ (миграции — 2026-08-30)
+`deploy/migrations/000001_init.up.sql:1` — source of truth (golang-migrate), `deploy/postgres/init.sql:1` — legacy fallback для fresh volume. `services/auth/migrations/env.py:1` (alembic) — `versions/0001_init.py` no-op. `video_status ENUM`, `users`, `videos (thumbnail_s3_key)`, `video_renditions`.
 
 ### Фаза 2a — Auth (Py FastAPI) ✅
 `services/auth/src/routers/auth.py:1` — register/login/refresh/me, JWT HS256 15m/7d, argon2. `src/core/security.py:34`.
@@ -231,7 +231,7 @@
 
 ## Бэклог (не в фазах)
 
-- `golang-migrate` / `alembic` миграции вместо `init.sql` на проде.
+- ~~`golang-migrate` / `alembic` миграции вместо `init.sql` на проде.~~ ✅ **Выполнено 2026-08-30:** `deploy/migrations/000001_init.up.sql` (golang-migrate) + сервис `migrate` в `deploy/docker-compose.yml:22`, `deploy/postgres/init.sql` помечен legacy, `Makefile: migrate-up/down/create`, `services/auth/migrations/env.py` + `versions/0001_init.py` (alembic). См. `deploy/migrations/README.md:1`.
 - `Content-Range` resumable fallback для presign (если MinIO multipart не поддержан).
 - Rate-limit на `auth` login (brute-force) — `redis` + `slowapi`.
 - E2E `scripts/e2e.sh:189` расширить на presign + private HLS.

@@ -1,6 +1,6 @@
--- Flowix initial schema — Phase 1
--- LEGACY: kept for `docker volume rm` fresh init. Source of truth is deploy/migrations/000001_init.up.sql (golang-migrate).
--- On prod, schema is managed by `migrate` service in deploy/docker-compose.yml, not this file.
+-- Flowix initial schema — golang-migrate version
+-- Source: deploy/postgres/init.sql (Phase 1), converted to versioned migration.
+-- This file is the single source of truth. init.sql kept as legacy fallback for fresh `docker volume rm`.
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 DO $$ BEGIN
@@ -25,8 +25,6 @@ CREATE TABLE IF NOT EXISTS videos (
   thumbnail_s3_key TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
--- thumbnail for VideoCard preview (added Phase 7 fix)
-ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_s3_key TEXT;
 
 CREATE TABLE IF NOT EXISTS video_renditions (
   video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,

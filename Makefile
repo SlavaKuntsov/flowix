@@ -3,7 +3,7 @@
 # .env — единственный в корне, compose явно указывает на него (--env-file), deploy/.env не нужен
 COMPOSE=docker compose --env-file .env -f deploy/docker-compose.yml
 
-.PHONY: up down logs ps build lint fmt test e2e swagger swagger-install sync-py
+.PHONY: up down logs ps build lint fmt test e2e swagger swagger-install sync-py migrate-up migrate-down migrate-create migrate-alembic-up
 
 up:
 	$(COMPOSE) up --build -d
@@ -102,6 +102,26 @@ fmt-front:
 
 e2e:
 	bash scripts/e2e.sh
+
+# Migrations — single source of truth: deploy/migrations (golang-migrate)
+# Prod: `migrate` service in docker-compose.yml runs `up` automatically.
+# Local: `make migrate-up` / `migrate-down`
+MIGRATE_IMAGE=migrate/migrate:v4.18.2
+DATABASE_URL ?=postgres://flowix:flowix@localhost:5432/flowix?sslmode=disable
+
+migrate-up:
+	docker run --rm --network host -v $(PWD)/deploy/migrations:/migrations $(MIGRATE_IMAGE) -path=/migrations -database="$(DATABASE_URL)" up
+
+migrate-down:
+	docker run --rm --network host -v $(PWD)/deploy/migrations:/migrations $(MIGRATE_IMAGE) -path=/migrations -database="$(DATABASE_URL)" down 1
+
+migrate-create:
+	@test -n "$(name)" || (echo "usage: make migrate-create name=add_visibility" && exit 1)
+	docker run --rm -v $(PWD)/deploy/migrations:/migrations $(MIGRATE_IMAGE) create -ext sql -dir /migrations -seq $(name)
+	@echo "created deploy/migrations/*_$(name).* — edit up/down then make migrate-up"
+
+migrate-alembic-up:
+	uv run --project services/auth alembic -c services/auth/alembic.ini upgrade head
 
 # Swagger (Go chi) — генерация docs для metadata и upload
 swagger-install:

@@ -9,11 +9,22 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Legacy fallback for fresh volume — primary migrations are golang-migrate (deploy/migrations)
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flowix} -d ${POSTGRES_DB:-flowix}"]
       interval: 5s
       retries: 10
+
+  migrate:
+    image: migrate/migrate:v4.18.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/migrations:ro
+    command: ["-path=/migrations", "-database=postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable", "up"]
+    restart: "no"
 
   minio:
     image: minio/minio:latest
@@ -40,7 +51,11 @@ services:
       /bin/sh -c "
       /usr/bin/mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
       /usr/bin/mc mb -p local/$${VIDEO_STORAGE_BUCKET:-videos} || true &&
-      /usr/bin/mc anonymous set public local/$${VIDEO_STORAGE_BUCKET:-videos} || true &&
+      /usr/bin/mc anonymous set private local/$${VIDEO_STORAGE_BUCKET:-videos} || true &&
+      /usr/bin/mc anonymous set download local/$${VIDEO_STORAGE_BUCKET:-videos}/renditions || true &&
+      /usr/bin/mc anonymous set download local/$${VIDEO_STORAGE_BUCKET:-videos}/thumbnails || true &&
+      /usr/bin/mc anonymous set private local/$${VIDEO_STORAGE_BUCKET:-videos}/raw || true &&
+      echo '[minio-setup] bucket policy: private + renditions/thumbnails download, raw private' &&
       exit 0
       "
     environment:
@@ -63,9 +78,11 @@ services:
       interval: 10s
       retries: 10
 
-  # Phase 5: nginx-vod JIT (kaltura/nginx-vod-module) — maps 3 MP4s to HLS via MinIO
+   # Phase 5: nginx-vod JIT (kaltura/nginx-vod-module) — maps 3 MP4s to HLS via MinIO
   nginx-vod:
     build: ./nginx
+    environment:
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
     depends_on:
       minio:
         condition: service_healthy
@@ -95,6 +112,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
     restart: unless-stopped
@@ -110,11 +129,14 @@ services:
     environment:
       DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
       JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
     ports:
       - "${METADATA_PORT:-8002}:8002"
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
@@ -134,6 +156,7 @@ services:
       VIDEO_STORAGE_BUCKET: ${VIDEO_STORAGE_BUCKET:-videos}
       METADATA_URL: http://metadata:8002
       JWT_SECRET: ${JWT_SECRET}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-5368709120}
     ports:
       - "${UPLOAD_PORT:-8003}:8003"
     depends_on:
@@ -162,6 +185,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       VIDEO_STORAGE_BUCKET: ${VIDEO_STORAGE_BUCKET:-videos}
       METADATA_URL: http://metadata:8002
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -181,6 +205,8 @@ services:
     build: ../services/gateway
     environment:
       JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-5368709120}
       AUTH_URL: http://auth:8001
       METADATA_URL: http://metadata:8002
       UPLOAD_URL: http://upload:8003

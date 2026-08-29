@@ -19,5 +19,7 @@ COPY --from=builder /app/migrations ./migrations
 COPY pyproject.toml ./
 ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app VIRTUAL_ENV=/app/.venv
 EXPOSE 8001
+# In prod schema is managed by deploy/migrations (migrate service). Alembic kept for dev/autogenerate.
+# To auto-migrate on start, use: CMD ["sh","-c","alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8001"]
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8001"]
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 CMD curl -f http://localhost:8001/health || exit 1
