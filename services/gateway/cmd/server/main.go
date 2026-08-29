@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -20,6 +21,13 @@ import (
 func main() {
 	port := envOr("GATEWAY_PORT", "8080")
 	jwtSecret := envOr("JWT_SECRET", "change-me-super-secret-jwt-key-32chars")
+	internalToken := envOr("INTERNAL_TOKEN", "")
+	uploadMaxBytes := int64(5 << 30) // 5GB default for Phase 9
+	if v := envOr("UPLOAD_MAX_BYTES", ""); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			uploadMaxBytes = n
+		}
+	}
 	authURL := envOr("AUTH_URL", "http://auth:8001")
 	metadataURL := envOr("METADATA_URL", "http://metadata:8002")
 	uploadURL := envOr("UPLOAD_URL", "http://upload:8003")
@@ -94,9 +102,15 @@ func main() {
 	r.Handle("/api/v1/auth/*", authProxy)
 
 	// --- Upload service: только POST /api/v1/videos/upload требует JWT ---
-	// Handle для POST — защищён, GET на этот путь не существует (пойдёт в metadata 404)
-	r.With(authMw).Post("/api/v1/videos/upload", uploadProxy.ServeHTTP)
-	r.With(authMw).Post("/api/v1/videos/upload/*", uploadProxy.ServeHTTP)
+	// Handle для POST — защищён, с лимитом 5-6GB (MaxBytesReader), прокидывает X-Internal-Token если нужен
+	maxBytesMw := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, uploadMaxBytes)
+			next.ServeHTTP(w, r)
+		})
+	}
+	r.With(authMw, maxBytesMw).Post("/api/v1/videos/upload", uploadProxy.ServeHTTP)
+	r.With(authMw, maxBytesMw).Post("/api/v1/videos/upload/*", uploadProxy.ServeHTTP)
 
 	// --- Metadata service ---
 	// Публичные GET (лист и деталь) — без JWT
@@ -118,6 +132,20 @@ func main() {
 	// frontend uses /thumbnails/{id}/thumb.jpg ; gateway proxies to MinIO bucket `videos`
 	r.Handle("/thumbnails/*", minioProxy)
 	r.Handle("/thumbnails", minioProxy)
+
+	// Inject X-Internal-Token for internal downstream calls (metadata internal/*, nginx vod mapping)
+	if internalToken != "" {
+		origMetaDirector := metadataProxy.Director
+		metadataProxy.Director = func(r *http.Request) {
+			origMetaDirector(r)
+			r.Header.Set("X-Internal-Token", internalToken)
+		}
+		origVodDirector := vodProxy.Director
+		vodProxy.Director = func(r *http.Request) {
+			origVodDirector(r)
+			r.Header.Set("X-Internal-Token", internalToken)
+		}
+	}
 
 	logger.Info().
 		Str("port", port).

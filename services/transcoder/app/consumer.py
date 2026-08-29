@@ -21,6 +21,7 @@ MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 BUCKET = os.getenv("VIDEO_STORAGE_BUCKET", "videos")
 METADATA_URL = os.getenv("METADATA_URL", "http://metadata:8002")
+INTERNAL_TOKEN = os.getenv("INTERNAL_TOKEN", "")
 QUEUE = "video.uploaded"
 
 # rendition spec: (quality, width, height, video_bitrate_k, audio_bitrate)
@@ -47,8 +48,11 @@ def update_status(video_id: str, status: str, renditions=None, thumbnail_s3_key:
         payload["renditions"] = renditions
     if thumbnail_s3_key:
         payload["thumbnail_s3_key"] = thumbnail_s3_key
+    headers = {}
+    if INTERNAL_TOKEN:
+        headers["X-Internal-Token"] = INTERNAL_TOKEN
     try:
-        r = requests.patch(url, json=payload, timeout=5)
+        r = requests.patch(url, json=payload, headers=headers, timeout=5)
         r.raise_for_status()
         log.info("updated %s -> %s", video_id, status)
     except Exception as e:

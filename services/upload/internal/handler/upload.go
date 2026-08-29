@@ -3,9 +3,13 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 
 	mw "flowix/upload/internal/middleware"
 )
@@ -62,8 +66,22 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		token = authHeader[7:]
 	}
 
-	// 10GB limit for MVP, but protect memory
-	if err := r.ParseMultipartForm(200 << 20); err != nil {
+	// 5-6GB limit for Phase 9 (env UPLOAD_MAX_BYTES, default 5GB). Streaming, not buffering whole file.
+	maxBytes := int64(5 << 30) // 5GB
+	if v := os.Getenv("UPLOAD_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			maxBytes = n
+		}
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+
+	// Keep memory low — rest goes to temp files (os.TempDir)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, `{"error":"file too large (max `+strconv.FormatInt(maxBytes, 10)+` bytes)"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, `{"error":"parse form: `+err.Error()+`"}`, 400)
 		return
 	}
@@ -73,6 +91,12 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = file.Close() }()
+
+	// Minimal MIME validation — header can be spoofed, deep check via ffprobe is in transcoder
+	if ct := header.Header.Get("Content-Type"); ct != "" && !isAllowedContentType(ct) {
+		http.Error(w, `{"error":"unsupported content type: `+ct+`"}`, 400)
+		return
+	}
 
 	title := r.FormValue("title")
 	if title == "" {
@@ -96,8 +120,13 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		contentType = "video/mp4"
 	}
 
-	// 2. upload to MinIO
+	// 2. upload to MinIO — size from header may be -1, stream correctly
 	if err := h.storage.PutObject(r.Context(), s3Key, file, header.Size, contentType); err != nil {
+		// MaxBytesReader returns error on too large body
+		if strings.Contains(err.Error(), "http: request body too large") {
+			http.Error(w, `{"error":"file too large"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, `{"error":"storage: `+err.Error()+`"}`, 500)
 		return
 	}
@@ -118,4 +147,22 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		"s3_key": s3Key,
 		"status": "uploaded",
 	})
+}
+
+var allowedCT = map[string]bool{
+	"video/mp4": true, "video/quicktime": true, "video/x-matroska": true, "video/webm": true,
+	"video/avi": true, "video/mov": true, "application/octet-stream": true,
+}
+
+func isAllowedContentType(ct string) bool {
+	// strip params like "; charset=utf-8"
+	if i := strings.Index(ct, ";"); i != -1 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if allowedCT[ct] {
+		return true
+	}
+	// allow any video/*
+	return strings.HasPrefix(ct, "video/")
 }

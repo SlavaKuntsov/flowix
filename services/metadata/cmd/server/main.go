@@ -45,6 +45,7 @@ func main() {
 	if jwtSecret == "" {
 		jwtSecret = "change-me-super-secret-jwt-key-32chars"
 	}
+	internalToken := os.Getenv("INTERNAL_TOKEN")
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
 	pool, err := pgxpool.New(context.Background(), dbURL)
@@ -83,10 +84,13 @@ func main() {
 	// public list/get
 	r.Get("/api/v1/videos", vh.List)
 	r.Get("/api/v1/videos/{id}", vh.Get)
-	// internal (no auth)
-	r.Patch("/internal/videos/{id}/status", vh.UpdateStatus)
-	r.Get("/internal/videos/{id}", vh.GetInternal)
-	r.Get("/internal/videos/{id}/vod", vh.GetVODMapping)
+	// internal — protected by X-Internal-Token (gateway/nginx/transcoder)
+	r.Group(func(r chi.Router) {
+		r.Use(mw.InternalAuth(internalToken))
+		r.Patch("/internal/videos/{id}/status", vh.UpdateStatus)
+		r.Get("/internal/videos/{id}", vh.GetInternal)
+		r.Get("/internal/videos/{id}/vod", vh.GetVODMapping)
+	})
 
 	log.Printf("metadata listening :%s", port)
 	if err := http.ListenAndServe(":"+port, r); err != nil {

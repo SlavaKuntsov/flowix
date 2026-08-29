@@ -30,7 +30,7 @@ FROM nginx:${NGINX_VERSION}-alpine
 RUN apk add --no-cache ffmpeg libxml2
 
 COPY --from=builder /tmp/nginx-${NGINX_VERSION}/objs/ngx_http_vod_module.so /usr/lib/nginx/modules/ngx_http_vod_module.so
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY nginx.conf /etc/nginx/nginx.conf.template
 
 EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["/bin/sh", "-c", "envsubst '$$INTERNAL_TOKEN' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && exec nginx -g 'daemon off;'"]
