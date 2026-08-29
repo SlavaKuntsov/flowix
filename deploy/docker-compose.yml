@@ -70,13 +70,15 @@ services:
       minio:
         condition: service_healthy
       metadata:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "${NGINX_VOD_PORT:-8081}:80"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:80/health"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/health | grep -q ok || curl -f http://127.0.0.1:80/health"]
       interval: 10s
       retries: 5
+      start_period: 10s
+      timeout: 3s
 
   # App services — built in later phases, kept here for routing
   auth:
@@ -96,6 +98,12 @@ services:
       rabbitmq:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
 
   metadata:
     build: ../services/metadata
@@ -108,6 +116,12 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   upload:
     build: ../services/upload
@@ -129,7 +143,15 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      metadata:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   transcoder:
     build: ../services/transcoder
@@ -145,7 +167,15 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      metadata:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'app.consumer' >/dev/null || pgrep -f celery >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
 
   gateway:
     build: ../services/gateway
@@ -158,11 +188,21 @@ services:
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     depends_on:
-      - auth
-      - metadata
-      - upload
-      - nginx-vod
+      auth:
+        condition: service_healthy
+      metadata:
+        condition: service_healthy
+      upload:
+        condition: service_healthy
+      nginx-vod:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   frontend:
     build:

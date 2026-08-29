@@ -10,4 +10,4 @@ RUN apk add --no-cache curl
 COPY --from=builder /server /server
 EXPOSE 8002
 CMD ["/server"]
-HEALTHCHECK --interval=10s --timeout=3s --retries=5 CMD curl -f http://localhost:8002/health || curl -f http://localhost:8080/health || curl -f http://localhost:8003/health || exit 1
+HEALTHCHECK --interval=10s --timeout=3s --retries=5 CMD curl -f http://localhost:8002/health || exit 1
