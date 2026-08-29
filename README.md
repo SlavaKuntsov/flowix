@@ -2,7 +2,7 @@
 
 > YouTube-like MVP with adaptive HLS, JIT transcoding and microservices architecture
 
-[![Go](https://img.shields.io/badge/Go-1.23-%2300ADD8?logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.27-%2300ADD8?logo=go)](https://go.dev)
 [![Python](https://img.shields.io/badge/Python-3.14-%233770A8?logo=python)](https://www.python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.11-%23009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Next.js](https://img.shields.io/badge/Next.js-14-black?logo=next.js)](https://nextjs.org)
@@ -41,7 +41,7 @@
 
 | Layer | Tech |
 |-------|------|
-| Gateway / Metadata / Upload | Go 1.23, `go-chi/chi/v5`, `pgx`, `zerolog`, `amqp091-go` |
+| Gateway / Metadata / Upload | Go 1.27, `go-chi/chi/v5`, `pgx`, `zerolog`, `amqp091-go` |
 | Auth / Transcoder | Python 3.14, FastAPI, Celery, `uv`, `argon2`, `aiobotocore`, `ffmpeg-python` |
 | Infra | Postgres 16, MinIO, RabbitMQ 3, `nginx-vod-module`, FFmpeg |
 | Frontend | Next.js 14, `hls.js` 1.5, `zustand` 4, Tailwind |
@@ -59,25 +59,29 @@
 │   └── transcoder/     # Python Celery + FFmpeg — video.uploaded consumer
 ├── frontend/           # Next.js 14 — /, /watch/[id], /upload
 ├── deploy/
-│   ├── docker-compose.yml
+│   ├── docker-compose.yml          # dev + healthchecks (service_healthy)
+│   ├── docker-compose.prod.yml     # CDN cache headers, resource limits, nginx.prod.conf
 │   ├── postgres/init.sql
-│   └── nginx/nginx.conf
-├── docs/               # spec.md, services-pipeline.md, PLAN.md, ZED.md
+│   └── nginx/{nginx.conf,nginx.prod.conf,Dockerfile}
+├── docs/               # spec.md, services-pipeline.md, PLAN.md, ZED.md, SWAGGER.md
+├── scripts/e2e.sh      # upload → poll ready → master.m3u8 → ffprobe aligned segments → gateway HLS
 └── Makefile
 ```
 
 ## 🚀 Quick Start
 
-**Prereqs:** Docker (OrbStack on macOS), `uv` for Python, `go` 1.23, `node` 20
+**Prereqs:** Docker (OrbStack on macOS), `uv` for Python, `go` 1.27, `node` 20, `ffmpeg`/`ffprobe` for e2e
 
 ```bash
 cp .env.example .env   # fill JWT_SECRET etc.
 make up                # docker compose --env-file .env -f deploy/docker-compose.yml up --build -d
-make ps
+make ps                # all services must be (healthy)
 make logs              # follow logs
+# production overrides (CDN headers, limits):
+# docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml up --build -d
 ```
 
-Infra: `postgres :5432` · `minio :9000/:9001` · `rabbitmq :5672/:15672` · `nginx-vod :8081` · `gateway :8080`
+Infra: `postgres :5432` · `minio :9000/:9001` · `rabbitmq :5672/:15672` · `nginx-vod :8081` · `gateway :8080` — all with `healthcheck` (`service_healthy`)
 
 **Without Docker (local dev):**
 
@@ -103,15 +107,20 @@ Verify: `curl http://localhost:8080/healthz` · open `http://localhost:3000` · 
 | `make fmt-py && make fmt-go` | format |
 | `make test-go && make test-py` | tests |
 | `make swagger` | generate OpenAPI (`swag init`) |
-| `make e2e` | `scripts/e2e.sh` — upload → transcode → HLS |
+| `make e2e` | `scripts/e2e.sh` — upload → poll ready → master.m3u8 → ffprobe aligned segments → gateway HLS |
 
 Zed IDE auto-fix on save — see [`.zed/settings.json`](.zed/settings.json) and [`docs/ZED.md`](docs/ZED.md) (`ruff`+`black` for Python, `gopls`+`gofumpt` for Go, `eslint`+`prettier` for TS).
 
 ## 🗺 Roadmap
 
 - [x] Phase 0–1 — infra & DB schema (`deploy/postgres/init.sql`)
-- [x] Phase 2 — Auth + stubs (chi + FastAPI)
-- [ ] Phase 3–7 — business logic, HLS playback, e2e
+- [x] Phase 2 — Auth + Metadata (chi + FastAPI, JWT HS256/Argon2)
+- [x] Phase 3 — Upload (multipart → MinIO raw + `video.uploaded`)
+- [x] Phase 4 — Transcoder (Celery + FFmpeg, aligned GOP `-g 60 -force_key_frames`, `-sc_threshold 0`)
+- [x] Phase 5 — Streaming nginx-vod JIT (`vod_mode mapped`, 3 MP4 → HLS)
+- [x] Phase 6 — Gateway (reverse proxy, CORS, rate-limit, JWT)
+- [x] Phase 7 — Frontend (Next 14, `hls.js`, `/watch/[id]` + `playbackRate`)
+- [x] Phase 8 — Integration & hardening (`scripts/e2e.sh` + `healthcheck` + `docker-compose.prod.yml` CDN)
 - See [`docs/PLAN.md`](docs/PLAN.md) — 8 phases, event contracts `video.uploaded` / `video.transcoded`
 
 ## 🤝 Contributing

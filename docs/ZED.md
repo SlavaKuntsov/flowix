@@ -18,7 +18,7 @@
 ```bash
 # Zed сам скачает LSP, но для локального запуска нужны:
 uv --version                # 0.7+ (уже есть)
-go version || echo "Go не нужен локально — собирается в Docker (golang:1.22-alpine)"
+go version || echo "Go не нужен локально — собирается в Docker (golang:1.27-alpine)"
 
 # Для Zed Gopls (если не установлен):
 go install golang.org/x/tools/gopls@latest
@@ -59,7 +59,7 @@ cat .zed/settings.json | python3 -m json.tool
 ```bash
 make fmt-py    # uv run black services/auth/src services/transcoder/app
 make lint-py   # black --check + ruff/flake8 + mypy
-make fmt-go    # gofmt -w (в Docker: docker run --rm -v $PWD:/app -w /app golang:1.22 gofmt -w .)
+make fmt-go    # gofmt -w (в Docker: docker run --rm -v $PWD:/app -w /app golang:1.27-alpine gofmt -w .)
 make lint-go   # golangci-lint (в Docker)
 make fmt-front lint-front  # prettier + eslint (после Phase 7)
 ```

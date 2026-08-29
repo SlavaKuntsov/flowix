@@ -94,7 +94,7 @@ CREATE TABLE video_renditions (video_id UUID REFERENCES videos(id) ON DELETE CAS
 - `GET /api/v1/videos` `POST /api/v1/videos` `GET/PATCH/DELETE /api/v1/videos/:id` (JWT)
 - `PATCH /internal/videos/:id/status` (без auth, для transcoder)
 
-**Dockerfile** multi-stage `golang:1.22-alpine`
+**Dockerfile** multi-stage `golang:1.27-alpine`
 
 ## Фаза 3 — Upload Service (Go, chi) `AGENTS.md:66-68`
 
@@ -141,7 +141,7 @@ CREATE TABLE video_renditions (video_id UUID REFERENCES videos(id) ON DELETE CAS
 **`services/gateway`:** `chi` + `httputil.ReverseProxy` + middleware `CORS`, `RateLimit (golang.org/x/time/rate)`, `JWT Auth`, `zerolog`, `healthz`
 
 **Роутинг:**
-- `/api/v1/auth/*` → `auth:8000`
+- `/api/v1/auth/*` → `auth:8001`
 - `/api/v1/videos/*` → `metadata:8002` / `upload:8003`
 - `/hls/*` → `nginx:8080`
 
@@ -153,14 +153,14 @@ CREATE TABLE video_renditions (video_id UUID REFERENCES videos(id) ON DELETE CAS
 
 **Страницы:** `/` (лента), `/watch/[id]` (`new Hls().loadSource(master.m3u8)` + `playbackRate 0.5-2x`), `/upload` (multipart + прогресс)
 
-## Фаза 8 — Интеграция и харденинг
+## Фаза 8 — Интеграция и харденинг ✅
 
-- `scripts/e2e.sh`: `upload → poll status=ready → curl master.m3u8 → ffprobe проверка aligned segments`
-- Линт `AGENTS.md:223-238`: `gofmt`, `golangci-lint`, `black`, `flake8`, `mypy`, `npm run lint`
-- `docker compose up --build` полный пайплайн, `healthcheck` для каждого сервиса, `deploy/docker-compose.prod.yml` (CDN заголовки)
+- `scripts/e2e.sh`: `upload → poll status=ready → curl master.m3u8 → ffprobe проверка aligned segments` (плюс `gateway /hls` и `EXTINF` duration cross-check; `ffprobe h264` на каждом сегменте)
+- Линт `AGENTS.md:223-238`: `gofmt`, `golangci-lint`, `black`, `flake8`, `mypy`, `npm run lint` — всё зелёное
+- `docker compose up --build` полный пайплайн, `healthcheck` для каждого сервиса (`service_healthy` в `deploy/docker-compose.yml:1`, фикс `nginx-vod` IPv6 `127.0.0.1`), `deploy/docker-compose.prod.yml` (CDN `Cache-Control`/`CDN-Cache-Control`/`Surrogate-Control`, `nginx.prod.conf` manifests 10s / segments 1y immutable, `gzip` для `m3u8`)
 
 ---
 
-## Ближайший шаг
+## Статус — все фазы завершены
 
-Фаза 0-1: скелет + infra + БД. После этого 2a и 2b параллельно.
+Фазы 0–8 выполнены. Спека и пайплайн — `docs/spec.md:1`, `docs/services-pipeline.md:1`. Дальше — наблюдаемость, resumable upload (`Content-Range`), DASH, CDN-интеграция.

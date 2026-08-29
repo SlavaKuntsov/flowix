@@ -38,7 +38,7 @@ go vet ./services/metadata/...
 golangci-lint run ./services/metadata/...  # требует golangci-lint
 
 # В Docker (без локального Go):
-docker run --rm -v $PWD:/app -w /app golang:1.22 gofmt -w ./services/metadata
+docker run --rm -v $PWD:/app -w /app golang:1.27-alpine gofmt -w ./services/metadata
 docker run --rm -v $PWD:/app -w /app -v $PWD/.golangci.yml:/etc/golangci.yml golangci/golangci-lint:latest golangci-lint run ./services/metadata/...
 ```
 
@@ -47,7 +47,7 @@ docker run --rm -v $PWD:/app -w /app -v $PWD/.golangci.yml:/etc/golangci.yml gol
 go test ./services/metadata/... -v
 # или
 make test-go
-docker run --rm -v $PWD:/app -w /app golang:1.22 go test ./services/metadata/... -v
+docker run --rm -v $PWD:/app -w /app golang:1.27-alpine go test ./services/metadata/... -v
 ```
 
 ## Zed IDE (при сохранении)

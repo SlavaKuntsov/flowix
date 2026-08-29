@@ -131,17 +131,19 @@ Flowix — MVP видеоплатформы с адаптивным стрими
 ## 6. Где что лежит в репо
 
 ```
-services/gateway|metadata|upload  — Go chi, см. их README.md
+services/gateway|metadata|upload  — Go chi (1.27-alpine), см. их README.md
 services/auth                     — FastAPI + uv, src/routers/auth.py
 services/transcoder               — Celery app/{celery_app.py,tasks.py}
 frontend/                         — Next 14 App Router
-deploy/docker-compose.yml         — infra + все сервисы
-deploy/nginx/nginx.conf           — vod_mode mapped
+deploy/docker-compose.yml         — infra + все сервисы (healthcheck service_healthy)
+deploy/docker-compose.prod.yml    — prod overrides (CDN headers, limits)
+deploy/nginx/{nginx.conf,nginx.prod.conf,Dockerfile} — vod_mode mapped, CDN cache
 deploy/postgres/init.sql          — DDL users/videos/renditions
-docs/PLAN.md                      — 8 фаз план
+docs/PLAN.md                      — 8 фаз план (0–8 завершены)
 docs/spec.md                      — полный архив ТЗ (бывший AGENTS.md)
 docs/SWAGGER.md                   — как генерить OpenAPI для Go
 docs/ZED.md                       — настройки Zed IDE
+scripts/e2e.sh                    — upload→ready→master.m3u8→ffprobe→gateway HLS
 ```
 
 ---
@@ -153,4 +155,4 @@ docs/ZED.md                       — настройки Zed IDE
 - **HLS 404 / нет сегментов**: `curl :8081/hls/{id}/master.m3u8` должен вернуть `EXT-X-STREAM-INF` ×3. Проверь `renditions/` в MinIO и `nginx.conf` `vod_upstream_location`.
 - **Gateway 502**: сервис за ним не поднят — `make ps`, `make logs`.
 
-См. также `scripts/e2e.sh` — прогоняет `upload → poll ready → curl master.m3u8 → ffprobe aligned segments`.
+См. также `scripts/e2e.sh` — прогоняет `upload → poll ready → curl master.m3u8 → ffprobe aligned segments (EXTINF cross-check, h264) → gateway /hls` (фаза 8). Prod-пайплайн — `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml up --build -d` (CDN `Cache-Control` для manifests/segments).
