@@ -7,18 +7,18 @@
 
 ## Легенда приоритетов
 
-| Приоритет | Смысл | SLA |
-|---|---|---|
-| **P0 Critical** | Прод-блокер: OOM, потеря данных, дыра безопасности | до след. релиза |
-| **P1 High** | Масштаб/надежность: большие файлы, N видео, ресурсы | 1-2 спринта |
-| **P2 Medium** | Оптимизация/UX/DX: экономия, наблюдаемость, техдолг | бэклог |
+| Приоритет       | Смысл                                               | SLA             |
+| --------------- | --------------------------------------------------- | --------------- |
+| **P0 Critical** | Прод-блокер: OOM, потеря данных, дыра безопасности  | до след. релиза |
+| **P1 High**     | Масштаб/надежность: большие файлы, N видео, ресурсы | 1-2 спринта     |
+| **P2 Medium**   | Оптимизация/UX/DX: экономия, наблюдаемость, техдолг | бэклог          |
 
 Фазы 0-8 — завершены (MVP). Фазы 9+ — план харденинга и масштабирования.
 
 ## Граф зависимостей (текущий + план)
 
 ```
-[Infra: Postgres, MinIO, RabbitMQ, Docker] 
+[Infra: Postgres, MinIO, RabbitMQ, Docker]
         ↓
 [Auth (Py)] ←→ [Metadata (Go)]  — независимы
         ↓         ↓
@@ -30,15 +30,15 @@
                             ↓
                        [Frontend (Next)] ← Gateway + /hls
 
-План харденинга:
-Фаза 9 (P0: Upload/Metadata sec) ─┐
-Фаза 10 (P0: Transcoder limits) ──┼→ Фаза 11 (P1: presigned upload) → Фаза 13 (P1: HLS auth+CDN)
-Фаза 10b (P0: Queue DLX) ─────────┘         ↓
-                                   Фаза 12 (P1: adaptive ladder/HW)
-                                            ↓
-                                   Фаза 14 (P1: observability)
-                                            ↓
-                                   Фаза 15 (P2: storage/CDN cost)
+ План харденинга:
+ Фаза 9 (P0: Upload/Metadata sec) ─┐
+ Фаза 10 (P0: Transcoder limits+heartbeat) ──┼→ Фаза 11 (P1: presigned upload) → Фаза 13 (P1: HLS auth+CDN)
+ Фаза 10b (P0: Queue DLX+idempotency) ─────────┘         ↓
+                                    Фаза 12 (P1: adaptive ladder/HW + фан-аут)
+                                             ↓
+                                    Фаза 14 (P1: observability)
+                                             ↓
+                                    Фаза 15 (P2: storage/CDN cost)
 ```
 
 ---
@@ -46,33 +46,43 @@
 ## Завершенные фазы (0-8) — кратко, без изменений
 
 ### Фаза 0 — Фундамент монорепо ✅
+
 Скелет `services/gateway|metadata|upload|auth|transcoder`, `frontend/`, `deploy/docker-compose.yml` (postgres:16 :5432, minio :9000/:9001, rabbitmq :15672, nginx-vod :8081), `.env.example`, `Makefile`. Проверка: `make up && make ps`.
 
 ### Фаза 1 — Контракты и БД ✅ (миграции — 2026-08-30)
+
 `deploy/migrations/000001_init.up.sql:1` — source of truth (golang-migrate), `deploy/postgres/init.sql:1` — legacy fallback для fresh volume. `services/auth/migrations/env.py:1` (alembic) — `versions/0001_init.py` no-op. `video_status ENUM`, `users`, `videos (thumbnail_s3_key)`, `video_renditions`.
 
 ### Фаза 2a — Auth (Py FastAPI) ✅
+
 `services/auth/src/routers/auth.py:1` — register/login/refresh/me, JWT HS256 15m/7d, argon2. `src/core/security.py:34`.
 
 ### Фаза 2b — Metadata (Go chi) ✅
+
 `services/metadata/cmd/server/main.go:1` — CRUD `/api/v1/videos`, `PATCH /internal/videos/:id/status`, `GET /internal/videos/:id/vod` (`internal/handler/video.go:124`).
 
 ### Фаза 3 — Upload (Go chi) ✅
+
 `services/upload/internal/handler/upload.go:57` — multipart `POST /api/v1/videos/upload` → MinIO `raw/{id}/original.mp4` → RabbitMQ.
 
 ### Фаза 4 — Transcoder (pika + FFmpeg) ✅
+
 `services/transcoder/app/consumer.py:1` — download → ffprobe → 1× ffmpeg audio (`audio.m4a`, общий для всех рипов) → 3× ffmpeg `-g 60 -force_key_frames expr:gte(t,n_forced*2) -c:a copy` → `renditions/{id}/{360,720,1080}.mp4` → PATCH ready.
 
 ### Фаза 5 — Streaming nginx-vod JIT ✅
+
 `deploy/nginx/nginx.conf:1` — `vod_mode mapped`, `proxy_pass minio:9000`, `vod_segment_duration 2000`.
 
 ### Фаза 6 — Gateway (Go chi) ✅
+
 `services/gateway/cmd/server/main.go:1` — `ReverseProxy` (`internal/proxy/proxy.go:15`), CORS, `RateLimit 20/40` (`internal/middleware/ratelimit.go:19`), JWT.
 
 ### Фаза 7 — Frontend (Next 14) ✅ (удаление — 2026-08-30)
+
 `frontend/src/components/VideoPlayer.tsx:1` — `hls.js` + `quality/speed` (`frontend/src/lib/api.ts:15`), `frontend/src/lib/api.ts:122` `deleteVideo(id)`, `watch/[id]/page.tsx:15` кнопка «Удалить» (owner only) + `VideoCard.tsx:1` `✕` на карточке, `services/metadata/internal/storage/minio.go:1` чистка S3 `raw/renditions/thumbnails`.
 
 ### Фаза 8 — Интеграция и харденинг ✅
+
 `scripts/e2e.sh:1` — `upload→poll ready→master.m3u8→ffprobe aligned segments→gateway /hls`, `make lint-*` зеленые, `deploy/docker-compose.prod.yml:1` (CDN Cache-Control).
 
 ---
@@ -82,12 +92,14 @@
 **Приоритет: P0 Critical** · Оценка: 2-3 дня · Зависит от: 0-8 ✅ · **Выполнено**
 
 **Проблемы из ревью:**
+
 - `services/upload/internal/handler/upload.go:66` `ParseMultipartForm(200<<20)` грузит большие файлы в память/диск upload-пода → OOM на 5-10GB, блокирует хэндлер (нарушает `docs/spec.md:252` — heavy work в очереди).
 - `deploy/docker-compose.yml:43` `mc anonymous set public` — `raw/` и `renditions` публично читаемы.
 - `services/metadata/cmd/server/main.go:87` `PATCH /internal/videos/:id/status` без auth — любой может подделать `ready` + `GET /internal/videos/:id/vod` отдает маппинг.
 - Нет лимита размера запроса ни в gateway, ни в upload.
 
 **Выполнено 2026-08-30 (лимит 5-6GB как просил, большие файлы — Фаза 11 presigned):**
+
 1. `upload`: `MaxBytesReader 5GB` (`UPLOAD_MAX_BYTES` env, `upload.go:65`) + `ParseMultipartForm 32MB` + MIME allowlist `video/*` →413/400. `"internal/middleware/internal.go:1"` не трогали — узкое место.
 2. `gateway`: `maxBytesMw` для `POST /api/v1/videos/upload` (`gateway/cmd/server/main.go:98`) + прокидка `X-Internal-Token` в `metadataProxy/vodProxy` Director.
 3. `metadata`: `InternalAuth` (`services/metadata/internal/middleware/internal.go:5`) — закрывает `Group(/internal/*)` (`metadata/cmd/server/main.go:86`), `transcoder/consumer.py:43` шлет заголовок, `deploy/nginx/nginx.conf:40` + `Dockerfile:33` envsubst.
@@ -105,17 +117,20 @@
 **Приоритет: P0 Critical** · Оценка: 3-4 дня · Зависит от: Фаза 9 ✅ DONE · **Выполнено**
 
 **Проблемы:**
+
 - `services/transcoder/app/consumer.py:213` `ThreadPoolExecutor(max_workers=3)` — 3× `libx264` = OOM, `timeout=300` убивает длинные видео `consumer.py:139`, `fget_object` качает целиком в `/tmp` `consumer.py:188` — диск кончается на больших файлах.
 - Нет лимитов в `deploy/docker-compose.prod.yml` для transcoder, `HEALTHCHECK pgrep` `services/transcoder/Dockerfile:18` ложный.
 - `consumer.py:139` форсирует `-r 30` даже для 24fps → лишний CPU.
 
-**Выполнено 2026-08-30:**
-1. Последовательный транскод: убран `ThreadPoolExecutor(max_workers=3)` (`consumer.py:213`), цикл `for q,w,h,br,abr in RENDITIONS_SPEC: transcode_one(..., fps=fps)` — проверено: 24fps видео → 3× ffmpeg последовательно.
-2. `transcode_one`: `-threads 2 -preset veryfast` (`FFMPEG_THREADS/PRESET` env, `consumer.py:140`), fps из probe (`_fps_from_probe` `consumer.py:108` — preserve ≤30, cap >30→30, fallback 30), `-g/-keyint_min fps*2`, `-maxrate 1.10×` (`consumer.py:155`), `timeout 900`.
-3. Диск-чек: `shutil.disk_usage(tmp).free <500MB → abort` (`consumer.py:210`), `fget_object` остался (pipe — Фаза 11).
-4. `SIGTERM` graceful: `signal.signal(SIGTERM/SIGINT)` + `_shutdown` flag (`consumer.py:268`), `timeout 900`, `celery` оставлен как legacy с пометкой (удаление — Фаза 10b), `healthcheck` упрощен до `pgrep app.consumer`.
-5. `deploy/docker-compose.yml:179` env `FFMPEG_THREADS/PRESET`, `deploy/docker-compose.prod.yml:44` limits `cpus 2 / mem 4G` + reservations 1G, `healthcheck pgrep` only.
-6. `.env.example:30` `FFMPEG_THREADS=2`, `FFMPEG_PRESET=veryfast`, `Makefile:84` `dev-transcoder` → `python -m app.consumer` (legacy `dev-transcoder-celery`).
+**Выполнено 2026-08-30 (в т.ч. фикс 2GB heartbeat):**
+
+1. Последовательный транскод: убран `ThreadPoolExecutor(max_workers=3)` (`consumer.py:213`), цикл `for q,w,h,br in RENDITIONS_SPEC: transcode_one(..., fps=fps)` — проверено: 24fps видео → 3× ffmpeg последовательно.
+2. `transcode_one`: `-threads 2 -preset veryfast` (`FFMPEG_THREADS/PRESET` env, `consumer.py:140`), fps из probe (`_fps_from_probe` `consumer.py:108` — preserve ≤30, cap >30→30, fallback 30), `-g/-keyint_min fps*2`, `-maxrate 1.10×` (`consumer.py:155`), `timeout 900`, общий `audio` (`audio.m4a` + `-c:a copy`).
+3. Диск-чек: `shutil.disk_usage(tmp).free <500MB → abort` (`consumer.py:210`), `fget_object` остался (pipe — Фаза 12).
+4. `SIGTERM` graceful: `signal.signal(SIGTERM/SIGINT)` + `_shutdown` flag (`consumer.py:332`), `timeout 900`, `celery` legacy (удаление — Фаза 10b), `healthcheck` `pgrep app.consumer`.
+5. **Heartbeat fix для больших файлов:** `params.heartbeat=600 blocked_connection_timeout=300` (`consumer.py:344`, было `60→104` на `2GB` `5м20с`), идемпотентность `ready→skip` (`consumer.py:248` `_get_status`), `0f1e8...` `19:33→19:39` теперь без ре-транскода.
+6. `deploy/docker-compose.yml:179` env `FFMPEG_THREADS/PRESET`, `deploy/docker-compose.prod.yml:44` limits `cpus 2 / mem 4G` + reservations 1G, `healthcheck pgrep` only.
+7. `.env.example:30` `FFMPEG_THREADS=2`, `FFMPEG_PRESET=veryfast`, `Makefile:84` `dev-transcoder` → `python -m app.consumer` (legacy `dev-transcoder-celery`).
 
 **Затронуто:** `services/transcoder/app/consumer.py`, `services/transcoder/pyproject.toml:8` (коммент legacy), `services/transcoder/README.md`, `deploy/docker-compose.yml`, `deploy/docker-compose.prod.yml`, `.env.example`, `.env`, `Makefile`.
 
@@ -128,10 +143,12 @@
 **Приоритет: P0 Critical** · Оценка: 1-2 дня · Зависит от: Фаза 10 (можно параллельно с 9)
 
 **Проблемы:**
+
 - `services/transcoder/app/consumer.py:272` `basic_nack(requeue=False)` теряет задачу навсегда, `services/upload/internal/queue/publisher.go:94` публикует `Persistent` но без `DLX`, `consumer.py:264` бесконечный `while True` без backoff на `AMQPConnectionError`.
 - Нет идемпотентности: повтор `video.uploaded` → дубли `video_renditions`.
 
 **Задачи:**
+
 1. Объявить `video.uploaded` с `x-dead-letter-exchange: dlx`, `video.uploaded.dlq` + `video.uploaded.retry` (TTL 30s). В `publisher.go:42` и `consumer.py:263` `queue_declare` с `arguments`.
 2. Консюмер: `try/except` → `basic_nack(requeue=False)` только в DLQ, ретрай 3× с `x-retry-count` header, после — `status=failed` + логирование.
 3. `metadata` `repository/video.go:123` `UpdateStatus` уже `ON CONFLICT DO UPDATE` — добавить идемпотентность по `video_id+status` (не перетирать `ready` на `processing`).
@@ -148,6 +165,7 @@
 **Проблема:** upload через Go прокси — узкое место для больших файлов и N параллельных загрузок (1 под = 1 файл в памяти). Нет resumable.
 
 **Задачи:**
+
 1. Новый флоу: `POST /api/v1/videos/presign` (gateway→upload→MinIO) возвращает `{video_id, upload_id, presigned_urls[]}` (S3 CreateMultipartUpload). FE (`frontend/src/lib/api.ts:123`) режет `File` на 10-50MB чанки, `PUT` напрямую в MinIO, `POST /complete` → upload публикует `video.uploaded`.
    - Альтернатива: `tus.io` (tus-gateway) — проще resumable, но S3 multipart нативнее для MinIO.
 2. `services/upload` добавить `internal/storage/presign.go` (minio-go `PresignedPutObject` / `CreateMultipartUpload`), `handler/presign.go`.
@@ -161,25 +179,28 @@
 
 ---
 
-## Фаза 12 — P1: Адаптивный ladder + HW accel
+## Фаза 12 — P1: Адаптивный ladder + HW accel + фан-аут (обновлено 2026-08-30, анализ 2GB 5м20с)
 
-**Приоритет: P1 High** · Оценка: 3 дня · Зависит от: Фаза 10, 11
+**Приоритет: P1 High** · Оценка: 3-5 дней · Зависит от: Фаза 10, 11 · **Доп.: анализ 2GB 3248×2004 275с → 360p 100с+720p 100с+1080p 106с + heartbeat 104**
 
 **Проблемы:**
-- Фиксированный ladder `consumer.py:27` апскейлит 480p→1080p, тратит CPU на мыло.
-- `libx264` CPU-only — дорого при N видео.
 
-**Задачи:**
-1. Использовать `probe_video` `consumer.py:58`: выбирать ladder динамически:
-   - `<720p` → `[360p]` или `[360p,480p]`
-   - `720p` → `[360p,720p]`
-   - `≥1080p` → `[360p,720p,1080p]` (+ опц. `144p` для превью на мобильных)
-2. Перейти на `CRF 23 + maxrate` вместо чистого CBR — экономия 20-30% битрейта. Оставить CBR опцией `env: ENCODE_MODE=crf|cbr`.
-3. HW accel: `Dockerfile` `services/transcoder/Dockerfile:4` собрать `ffmpeg` с `--enable-nvenc` / `qsv` (или базовый образ `jrottenberg/ffmpeg:*-nvidia`), `transcode_one` выбирает `h264_nvenc` если доступен (`nvidia-smi`), иначе `libx264`.
-4. Добавить `-vf scale=-2:{h}:flags=lanczos` уже есть `consumer.py:100` — оставить, добавить `format=yuv420p` для совместимости.
-5. Генерировать thumbnail из 360p рипа, не из оригинала (быстрее).
+- Фиксированный ladder `consumer.py:31` апскейлит 480p→1080p, тратит CPU на мыло.
+- `libx264` CPU-only — `2GB` `19:33:41→19:39` ~5м20с, `heartbeat 60с` → `ConnectionResetError 104` → ре-транскод ×2.
+- Последовательно 3 рипа в 1 воркере → `max = sum`, хотя `cpu 2 / mem 4G` `deploy/docker-compose.prod.yml:44`.
 
-**Проверка:** 480p исходник → только 360p рип (нет 1080p), 4K → 1080p макс, `ffprobe renditions` все `h264`, `encode time` на NVENC 3× быстрее, `scripts/e2e.sh` `EXT-X-STREAM-INF count` динамический (обновить `EXPECTED_RENDITIONS`).
+**Задачи (расширено):**
+
+1. **Адаптивный ladder** (`probe` `consumer.py:62`): `<720p→[360p]`, `720p→[360p,720p]`, `≥1080p→[360p,720p,1080p]` (+ опц. `144p`). Экономия -33% CPU для `3K` без `360p` миса.
+2. **CRF 23 + maxrate** вместо CBR — -20-30% битрейта, `env: ENCODE_MODE`.
+3. **HW accel** (`Dockerfile:4` `jrottenberg/ffmpeg:*-nvidia` или `--enable-nvenc/qsv`), `transcode_one` `h264_nvenc -preset p4 -rc vbr` если `nvidia-smi`, иначе `libx264` — **5-10×** быстрее (`2GB` → 60-90с).
+4. **Фан-аут по рипам** — 3 очереди `video.transcode.360p/720p/1080p`, 3 воркера по 1 рипу (`prefetch 1`) → `total = max(100с)` вместо `sum 300с`. + **720p first** — `master.m3u8` из 2 рипов, `1080p` докидывается позже (юзер видит через 100с, а не 300с).
+5. **Стрим без `/tmp`** — `ffmpeg -i pipe:0` + `MinIO GetObject` stream (сейчас `fget_object` `consumer.py:272` 2GB на диск) → экономия диска/N параллельных.
+6. **Чанк-транскод** (опц. для >10м видео) — режем по `force_key_frames 2с` на чанки, пул 4 воркера, `concat`.
+7. **Heartbeat fix** уже в Фазе 10: `params.heartbeat=600` `consumer.py:344` (было `104`), идемпотентность `ready→skip`.
+8. Thumbnail из `360p` рипа, `ultrafast` для `>1GB` (`FFMPEG_PRESET` env).
+
+**Проверка:** `480p→[360p]`, `3K 2GB→[720p,1080p]` ~90с с NVENC, `fan-out` `master` с 2 рипами за 100с, `next HLS` без freeze (буфер 4с `VideoPlayer.tsx:35`).
 
 ---
 
@@ -188,10 +209,12 @@
 **Приоритет: P1 High** · Оценка: 2-3 дня · Зависит от: Фаза 9
 
 **Проблемы:**
+
 - `services/gateway/cmd/server/main.go:115` `r.Handle("/hls/*", vodProxy)` публично, `deploy/nginx/nginx.conf:61` `Cache-Control: public` — приватные видео доступны подбором UUID.
 - Нет `signed URL`, нет проверки владельца.
 
 **Задачи:**
+
 1. Gateway middleware `HLSAuth`: `GET /hls/{id}/*?token=...` (JWT с `video_id` + `exp` 1h) или проверка `Authorization: Bearer` + `metadata owner_id`. Для публичных видео — пропуск. Для приватных — 403 без токена.
 2. `metadata` добавить `visibility: public|private|unlisted` в `videos` (`deploy/postgres/init.sql`), `GET /internal/videos/:id/vod` проверяет visibility.
 3. `deploy/nginx/nginx.prod.conf` — `Cache-Control: public, max-age=86400` для public, `private, max-age=10` для private, `CDN-Cache-Control` уже есть в `prod.yml` — дописать.
@@ -208,6 +231,7 @@
 **Проблемы:** `RequestID` не прокидывается (`proxy.go:18`), логи `zerolog/slog/logging` вперемешку, нет метрик.
 
 **Задачи:**
+
 1. Gateway `proxy.go:18` прокидывать `X-Request-ID` (chi `middleware.RequestID`), `X-User-ID`, `X-Forwarded-For` во все апстримы. `metadata`/`upload` логировать `request_id`.
 2. Добавить `prometheus` + `grafana` в `deploy/docker-compose.yml`, метрики: `rabbitmq_queue_depth`, `ffmpeg_duration_seconds`, `upload_bytes`, `vod_cache_hit`.
 3. `auth`/`metadata`/`upload`/`gateway` — единый JSON лог формат (`zerolog` уже json в prod `gateway/main.go:35`), добавить `trace_id`.
@@ -222,6 +246,7 @@
 **Приоритет: P2 Medium** · Оценка: 1-2 дня · Зависит от: Фазы 11, 12
 
 **Задачи:**
+
 1. MinIO lifecycle: удалять `raw/{id}/original.mp4` через 7d после `ready` (или сразу, оставлять только если `keep_raw=true`). Добавить `mc ilm add --expiry-days 7`.
 2. Добавить `pgbouncer` перед postgres, `pool_pre_ping=True` уже есть `services/auth/src/core/db.py:26` — настроить `pool_size`.
 3. `frontend` `next.config.mjs` — `output: standalone` для меньшего образа, `VideoPlayer.tsx:34` `maxBufferLength:10` уже экономит память клиента — оставить.
