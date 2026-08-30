@@ -382,6 +382,9 @@ const docTemplate = `{
                 "id": {
                     "type": "string"
                 },
+                "owner_email": {
+                    "type": "string"
+                },
                 "owner_id": {
                     "type": "string"
                 },
