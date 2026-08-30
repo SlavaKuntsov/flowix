@@ -9,6 +9,9 @@ up:
 	$(COMPOSE) up --build -d
 	@echo "infra: postgres :5432, minio :9000/:9001, rabbit :5672/:15672, nginx-vod :8081, gateway :8080"
 
+up-frontend:
+	$(COMPOSE) up --build -d frontend
+
 down:
 	$(COMPOSE) down -v
 
