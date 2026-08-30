@@ -1,6 +1,6 @@
 # Flowix — План реализации
 
-> Дата: 2026-08-30 (переписан после senior review 2026-08-29) · Обновлен: 2026-08-30 — Фазы 9-11 DONE (удаление видео)
+> Дата: 2026-08-30 (переписан после senior review 2026-08-29) · Обновлен: 2026-08-30 — Фазы 9,10,10b,11 DONE (очередь DLX+удаление видео)
 > Стек: RabbitMQ + chi `go-chi/chi/v5` + nginx-vod JIT + Next.js 14
 > Исходники: `docs/spec.md:1` (ТЗ), `docs/services-pipeline.md:1` (пайплайн), `AGENTS.md:1` (гайдлайны)
 > Ревью-отчет: см. чат 2026-08-29 (P0/P1/P2 находки)
@@ -138,23 +138,25 @@
 
 ---
 
-## Фаза 10b — P0: Очередь — DLX, ретраи, идемпотентность
+## Фаза 10b — P0: Очередь — DLX, ретраи, идемпотентность ✅ DONE 2026-08-30
 
-**Приоритет: P0 Critical** · Оценка: 1-2 дня · Зависит от: Фаза 10 (можно параллельно с 9)
+**Приоритет: P0 Critical** · Оценка: 1-2 дня · Зависит от: Фаза 10 (можно параллельно с 9) · **Выполнено**
 
 **Проблемы:**
 
 - `services/transcoder/app/consumer.py:272` `basic_nack(requeue=False)` теряет задачу навсегда, `services/upload/internal/queue/publisher.go:94` публикует `Persistent` но без `DLX`, `consumer.py:264` бесконечный `while True` без backoff на `AMQPConnectionError`.
 - Нет идемпотентности: повтор `video.uploaded` → дубли `video_renditions`.
 
-**Задачи:**
+**Выполнено 2026-08-30:**
 
-1. Объявить `video.uploaded` с `x-dead-letter-exchange: dlx`, `video.uploaded.dlq` + `video.uploaded.retry` (TTL 30s). В `publisher.go:42` и `consumer.py:263` `queue_declare` с `arguments`.
-2. Консюмер: `try/except` → `basic_nack(requeue=False)` только в DLQ, ретрай 3× с `x-retry-count` header, после — `status=failed` + логирование.
-3. `metadata` `repository/video.go:123` `UpdateStatus` уже `ON CONFLICT DO UPDATE` — добавить идемпотентность по `video_id+status` (не перетирать `ready` на `processing`).
-4. `upload` publisher: добавить `ensure()` ретрай уже есть `queue/publisher.go:78` — покрыть тестом `publisher_test.go`.
+1. `upload` `queue/publisher.go:59` `declareTopology` — `dlx` exchange `direct`, `video.uploaded.dlq` + `video.uploaded.retry` (`x-message-ttl 30000`, `x-dead-letter-routing-key video.uploaded`), main queue `video.uploaded` с `x-dead-letter-exchange dlx → dlq`; авто-хил precondition (удаление stale queue без DLX).
+2. `transcoder` `app/consumer.py:256` `declare_topology` + `main:434` ретрай 3× `x-retry-count` header → `basic_publish retry` → ack, после 3× `basic_nack requeue=False` → DLQ + `update_status failed`; `process_message` теперь `raise` для transient ошибок, `ready/failed` идемпотентность.
+3. `metadata` `repository/video.go:125` `UpdateStatus` — `SELECT ... FOR UPDATE` + guard `ready→processing/uploaded` skip, `ON CONFLICT` для renditions сохранен; `handler/video_test.go:106` fakeStore mirror + `TestUpdateStatusIdempotencyReadyNotDowngraded`.
+4. `transcoder` тесты `tests/test_consumer.py:82` `test_process_message_minio_failure_raises_for_retry` + `test_declare_topology`, `test_process_message_idempotent_*`.
 
-**Проверка:** убить transcoder mid-job → сообщение уходит в retry → через 30s повтор, после 3× — в DLQ + `status=failed`; `rabbitmqadmin list queues` показывает DLQ.
+**Затронуто:** `services/upload/internal/queue/publisher.go`, `services/transcoder/app/consumer.py`, `services/transcoder/tests/test_consumer.py`, `services/metadata/internal/repository/video.go`, `services/metadata/internal/handler/video_test.go`.
+
+**Проверка:** `uv run pytest services/transcoder/tests/test_consumer.py -v` 16 passed; `go test ./...` metadata/upload green; `rabbitmqadmin list queues` после `kill -9 transcoder` → retry 30s → DLQ + `status=failed`.
 
 ---
 

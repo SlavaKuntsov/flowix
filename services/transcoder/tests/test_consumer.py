@@ -79,7 +79,8 @@ def test_process_message_missing_fields():
         mock_status.assert_not_called()
 
 
-def test_process_message_minio_failure_marks_failed():
+def test_process_message_minio_failure_raises_for_retry():
+    # Phase 10b: pipeline failures raise so caller can retry via DLX; failed is set after 3 retries, not immediately.
     body = json.dumps({"video_id": "vid-1", "s3_key": "raw/vid-1/original.mp4"}).encode()
     fake_minio = MagicMock()
     fake_minio.stat_object.side_effect = Exception("not found")
@@ -87,14 +88,19 @@ def test_process_message_minio_failure_marks_failed():
     with (
         patch("app.consumer.get_minio", return_value=fake_minio),
         patch("app.consumer.update_status") as mock_status,
+        patch("app.consumer._get_status", return_value=None),
     ):
-        cons.process_message(body)
-        # first processing, then failed
+        try:
+            cons.process_message(body)
+            assert False, "expected exception for retry"
+        except Exception as e:
+            assert "not found" in str(e)
+        # processing was set, but failed is now handled by outer retry logic after 3 attempts
         assert mock_status.call_args_list[0][0][1] == "processing"
-        assert mock_status.call_args_list[1][0][1] == "failed"
+        assert len(mock_status.call_args_list) == 1
 
 
-def test_process_message_transcode_failure_marks_failed():
+def test_process_message_transcode_failure_raises_for_retry():
     body = json.dumps({"video_id": "vid-1", "s3_key": "raw/vid-1/original.mp4"}).encode()
     fake_minio = MagicMock()
     fake_minio.stat_object.return_value = MagicMock()
@@ -103,13 +109,18 @@ def test_process_message_transcode_failure_marks_failed():
     with (
         patch("app.consumer.get_minio", return_value=fake_minio),
         patch("app.consumer.update_status") as mock_status,
+        patch("app.consumer._get_status", return_value=None),
         patch("app.consumer.probe_video", return_value={}),
         patch("app.consumer.encode_audio", return_value=None),
         patch("app.consumer.transcode_one", side_effect=Exception("ffmpeg error")),
         patch("app.consumer.transcode_thumbnail", return_value=None),
     ):
-        cons.process_message(body)
-        assert mock_status.call_args_list[-1][0][1] == "failed"
+        try:
+            cons.process_message(body)
+            assert False, "expected exception"
+        except Exception as e:
+            assert "ffmpeg error" in str(e)
+        assert mock_status.call_args_list[0][0][1] == "processing"
 
 
 def test_transcode_one_builds_aligned_cmd():
@@ -194,3 +205,51 @@ def test_process_message_audio_failure_falls_back_to_video_only():
 def test_probe_video_handles_missing_ffprobe():
     with patch("app.consumer.subprocess.run", side_effect=FileNotFoundError("no ffprobe")):
         assert cons.probe_video("/tmp/x.mp4") is None
+
+
+def test_process_message_idempotent_ready_skip():
+    body = json.dumps({"video_id": "vid-ready", "s3_key": "raw/vid-ready/original.mp4"}).encode()
+    with (
+        patch("app.consumer._get_status", return_value="ready"),
+        patch("app.consumer.update_status") as mock_status,
+        patch("app.consumer.get_minio") as mock_get,
+    ):
+        cons.process_message(body)
+        mock_status.assert_not_called()
+        mock_get.assert_not_called()
+
+
+def test_process_message_idempotent_failed_skip():
+    body = json.dumps({"video_id": "vid-failed", "s3_key": "raw/vid-failed/original.mp4"}).encode()
+    with (
+        patch("app.consumer._get_status", return_value="failed"),
+        patch("app.consumer.update_status") as mock_status,
+        patch("app.consumer.get_minio") as mock_get,
+    ):
+        cons.process_message(body)
+        mock_status.assert_not_called()
+        mock_get.assert_not_called()
+
+
+def test_declare_topology():
+    mock_ch = MagicMock()
+    cons.declare_topology(mock_ch)
+    mock_ch.exchange_declare.assert_called_once_with(exchange=cons.DLX_EXCHANGE, exchange_type="direct", durable=True)
+    # dlq, retry, main queues declared
+    assert mock_ch.queue_declare.call_count == 3
+    calls = [c[1].get("queue") for c in mock_ch.queue_declare.call_args_list]
+    assert cons.DLQ in calls
+    assert cons.RETRY_QUEUE in calls
+    assert cons.QUEUE in calls
+    # retry queue has TTL
+    retry_call = [c for c in mock_ch.queue_declare.call_args_list if c[1].get("queue") == cons.RETRY_QUEUE][0]
+    assert retry_call[1]["arguments"]["x-message-ttl"] == cons.RETRY_TTL_MS
+    # main queue has DLX
+    main_call = [c for c in mock_ch.queue_declare.call_args_list if c[1].get("queue") == cons.QUEUE][0]
+    assert main_call[1]["arguments"]["x-dead-letter-exchange"] == cons.DLX_EXCHANGE
+
+
+def test_fps_from_probe_preserves_and_caps():
+    assert cons._fps_from_probe({"streams": [{"avg_frame_rate": "24/1"}]}) == 24
+    assert cons._fps_from_probe({"streams": [{"avg_frame_rate": "60/1"}]}) == 30
+    assert cons._fps_from_probe(None) == 30

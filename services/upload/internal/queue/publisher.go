@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -27,8 +28,13 @@ func NewPublisher(url, queue string) (*Publisher, error) {
 	return p, nil
 }
 
-// connect dials a fresh connection + channel and declares the queue.
-// Caller must hold p.mu (the constructor runs before the publisher is shared).
+const (
+	dlxExchange = "dlx"
+	retryTTL    = int32(30000)
+)
+
+// connect dials a fresh connection + channel and declares the queue topology.
+// For video.uploaded it creates DLX + DLQ + retry queue (TTL 30s) per Phase 10b.
 func (p *Publisher) connect() error {
 	conn, err := amqp.Dial(p.url)
 	if err != nil {
@@ -39,14 +45,87 @@ func (p *Publisher) connect() error {
 		_ = conn.Close()
 		return fmt.Errorf("amqp channel: %w", err)
 	}
-	if _, err := ch.QueueDeclare(p.queue, true, false, false, false, nil); err != nil {
+	if err := declareTopology(ch, p.queue); err != nil {
+		// If queue exists with different args (pre-10b without DLX), broker returns 406.
+		// Auto-heal by deleting stale queue and re-declaring (only for video.uploaded).
+		if strings.Contains(err.Error(), "PRECONDITION") || strings.Contains(err.Error(), "inequivalent") {
+			log.Warn().Err(err).Str("queue", p.queue).Msg("queue args mismatch, recreating with DLX")
+			_ = ch.Close()
+			_ = conn.Close()
+			// delete stale queue via temp connection
+			if tmpConn, te := amqp.Dial(p.url); te == nil {
+				if tmpCh, ce := tmpConn.Channel(); ce == nil {
+					_, _ = tmpCh.QueueDelete(p.queue, false, false, false)
+					_ = tmpCh.Close()
+				}
+				_ = tmpConn.Close()
+			}
+			// retry fresh
+			conn2, err2 := amqp.Dial(p.url)
+			if err2 != nil {
+				return fmt.Errorf("amqp dial retry: %w", err2)
+			}
+			ch2, err2 := conn2.Channel()
+			if err2 != nil {
+				_ = conn2.Close()
+				return fmt.Errorf("amqp channel retry: %w", err2)
+			}
+			if err2 := declareTopology(ch2, p.queue); err2 != nil {
+				_ = ch2.Close()
+				_ = conn2.Close()
+				return err2
+			}
+			p.conn = conn2
+			p.channel = ch2
+			log.Info().Str("queue", p.queue).Msg("rabbitmq publisher ready (recreated)")
+			return nil
+		}
 		_ = ch.Close()
 		_ = conn.Close()
-		return fmt.Errorf("queue declare: %w", err)
+		return err
 	}
 	p.conn = conn
 	p.channel = ch
 	log.Info().Str("queue", p.queue).Msg("rabbitmq publisher ready")
+	return nil
+}
+
+func declareTopology(ch *amqp.Channel, queue string) error {
+	// Only video.uploaded gets DLX/DLQ/retry; other queues stay simple.
+	if queue != "video.uploaded" {
+		if _, err := ch.QueueDeclare(queue, true, false, false, false, nil); err != nil {
+			return fmt.Errorf("queue declare: %w", err)
+		}
+		return nil
+	}
+	if err := ch.ExchangeDeclare(dlxExchange, "direct", true, false, false, false, nil); err != nil {
+		return fmt.Errorf("exchange declare dlx: %w", err)
+	}
+	dlq := queue + ".dlq"
+	if _, err := ch.QueueDeclare(dlq, true, false, false, false, nil); err != nil {
+		return fmt.Errorf("dlq declare: %w", err)
+	}
+	if err := ch.QueueBind(dlq, dlq, dlxExchange, false, nil); err != nil {
+		return fmt.Errorf("dlq bind: %w", err)
+	}
+	retryQ := queue + ".retry"
+	retryArgs := amqp.Table{
+		"x-dead-letter-exchange":    "",
+		"x-dead-letter-routing-key": queue,
+		"x-message-ttl":             retryTTL,
+	}
+	if _, err := ch.QueueDeclare(retryQ, true, false, false, false, retryArgs); err != nil {
+		return fmt.Errorf("retry queue declare: %w", err)
+	}
+	mainArgs := amqp.Table{
+		"x-dead-letter-exchange":    dlxExchange,
+		"x-dead-letter-routing-key": dlq,
+	}
+	if _, err := ch.QueueDeclare(queue, true, false, false, false, mainArgs); err != nil {
+		// If queue already exists without DLX args, broker returns 406 PRECONDITION_FAILED.
+		// Caller must purge the old queue (rabbitmqadmin delete queue) before redeploy.
+		return fmt.Errorf("queue declare: %w", err)
+	}
 	return nil
 }
 

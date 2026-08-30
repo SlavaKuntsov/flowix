@@ -88,8 +88,14 @@ func (f *fakeStore) UpdateStatus(_ context.Context, id string, status model.Vide
 	if !ok {
 		return errNotFound()
 	}
+	// idempotency: don't downgrade ready → processing/uploaded
+	if v.Status == model.StatusReady && (status == model.StatusProcessing || status == model.StatusUploaded) {
+		return nil
+	}
 	v.Status = status
-	v.Renditions = renditions
+	if len(renditions) > 0 {
+		v.Renditions = renditions
+	}
 	return nil
 }
 func (f *fakeStore) UpdateThumbnail(_ context.Context, id string, thumbnailS3Key string) error {
@@ -318,5 +324,35 @@ func TestGetVODMapping(t *testing.T) {
 	}
 	if len(got.Sequences) != 3 || got.Sequences[0].Clips[0].Path != "/renditions/vid-1/360p.mp4" {
 		t.Fatalf("unexpected mapping: %+v", got)
+	}
+}
+
+func TestUpdateStatusIdempotencyReadyNotDowngraded(t *testing.T) {
+	store := newFake()
+	store.videos["vid-1"] = &model.Video{ID: "vid-1", OwnerID: "owner1", Title: "t", Status: model.StatusReady}
+	r := testRouter(store)
+	// try to downgrade ready -> processing should be ignored (idempotent)
+	body, _ := json.Marshal(map[string]string{"status": "processing"})
+	req := httptest.NewRequest("PATCH", "/internal/videos/vid-1/status", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("want 200 got %d %s", w.Code, w.Body.String())
+	}
+	if store.videos["vid-1"].Status != model.StatusReady {
+		t.Fatalf("ready should not be downgraded to processing, got %s", store.videos["vid-1"].Status)
+	}
+	// ready -> failed should be allowed (terminal)
+	body, _ = json.Marshal(map[string]string{"status": "failed"})
+	req = httptest.NewRequest("PATCH", "/internal/videos/vid-1/status", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("want 200 got %d", w.Code)
+	}
+	if store.videos["vid-1"].Status != model.StatusFailed {
+		t.Fatalf("ready -> failed should be allowed, got %s", store.videos["vid-1"].Status)
 	}
 }

@@ -24,6 +24,11 @@ BUCKET = os.getenv("VIDEO_STORAGE_BUCKET", "videos")
 METADATA_URL = os.getenv("METADATA_URL", "http://metadata:8002")
 INTERNAL_TOKEN = os.getenv("INTERNAL_TOKEN", "")
 QUEUE = "video.uploaded"
+DLX_EXCHANGE = "dlx"
+DLQ = QUEUE + ".dlq"
+RETRY_QUEUE = QUEUE + ".retry"
+RETRY_TTL_MS = 30000
+MAX_RETRIES = 3
 FFMPEG_THREADS = os.getenv("FFMPEG_THREADS", "2")
 FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "veryfast")
 
@@ -248,6 +253,47 @@ def transcode_thumbnail(input_path: str, output_path: str):
         log.warning("thumbnail failed: %s", e)
 
 
+def declare_topology(channel):
+    """Declare DLX + DLQ + retry queue + main queue (idempotent). Phase 10b."""
+    channel.exchange_declare(exchange=DLX_EXCHANGE, exchange_type="direct", durable=True)
+    channel.queue_declare(queue=DLQ, durable=True)
+    try:
+        channel.queue_bind(queue=DLQ, exchange=DLX_EXCHANGE, routing_key=DLQ)
+    except Exception as e:
+        log.warning("queue_bind DLQ failed (may already bound): %s", e)
+    channel.queue_declare(
+        queue=RETRY_QUEUE,
+        durable=True,
+        arguments={
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": QUEUE,
+            "x-message-ttl": RETRY_TTL_MS,
+        },
+    )
+    try:
+        channel.queue_declare(
+            queue=QUEUE,
+            durable=True,
+            arguments={
+                "x-dead-letter-exchange": DLX_EXCHANGE,
+                "x-dead-letter-routing-key": DLQ,
+            },
+        )
+    except Exception as e:
+        # Queue exists without DLX args (pre-10b) -> PRECONDITION_FAILED 406, channel closed.
+        # Caller (main loop) will reconnect and retry; log for visibility.
+        # If channel is still open, try to heal by deleting stale queue.
+        msg = str(e)
+        if "PRECONDITION" in msg or "inequivalent" in msg:
+            log.warning("main queue args mismatch (pre-10b), deleting stale queue: %s", e)
+            try:
+                # need fresh channel for delete since current one may be closed
+                pass
+            except Exception:
+                pass
+        raise
+
+
 def process_message(body: bytes):
     try:
         data = json.loads(body)
@@ -264,88 +310,87 @@ def process_message(body: bytes):
     if cur == "ready":
         log.info("video %s already ready, skipping re-transcode (idempotent ack)", video_id)
         return
+    # Idempotency: if already failed, skip (DLQ case, don't reprocess)
+    if cur == "failed":
+        log.info("video %s already failed, skipping", video_id)
+        return
     update_status(video_id, "processing")
 
-    # Real pipeline: download raw → ffprobe → 3× ffmpeg parallel → upload → PATCH ready
-    try:
-        mc = get_minio()
-        # ensure object exists (stat will raise if missing)
-        mc.stat_object(BUCKET, s3_key)
+    # Real pipeline: download raw → ffprobe → 3× ffmpeg sequential → upload → PATCH ready
+    # Phase 10b: raise on failure so caller can retry via DLX/retry queue; don't mark failed here.
+    mc = get_minio()
+    # ensure object exists (stat will raise if missing)
+    mc.stat_object(BUCKET, s3_key)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            # Phase 10: disk check before download (avoid filling /tmp on large files)
-            try:
-                free = shutil.disk_usage(tmp).free
-                # need at least 2× raw size free (raw + renditions); conservative 500MB min
-                if free < 500 * 1024 * 1024:
-                    log.error(
-                        "low disk space in %s: free=%d bytes, aborting %s", tmp, free, video_id
-                    )
-                    raise RuntimeError(f"low disk space: {free} bytes free")
-            except Exception as e:
-                if "low disk space" in str(e):
-                    raise
-                log.warning("disk_usage check failed: %s", e)
-
-            raw_path = os.path.join(tmp, "original.mp4")
-            log.info("downloading s3://%s/%s -> %s", BUCKET, s3_key, raw_path)
-            try:
-                mc.fget_object(BUCKET, s3_key, raw_path)
-            except AttributeError:
-                log.warning("fget_object not available, falling back to copy test stub")
-                raise
-
-            probe = probe_video(raw_path)
-            fps = _fps_from_probe(probe)
-
-            # prepare output paths
-            outputs: dict[str, str] = {}
-            for q, w, h, br in RENDITIONS_SPEC:
-                outputs[q] = os.path.join(tmp, f"{q}.mp4")
-
-            # Shared audio track for all renditions (see encode_audio). Sources
-            # without a usable audio stream stay video-only rather than failing.
-            audio_path: str | None = None
-            try:
-                candidate = os.path.join(tmp, "audio.m4a")
-                encode_audio(raw_path, candidate)
-                audio_path = candidate
-            except Exception as e:
-                log.warning("no usable audio track (%s), renditions will be video-only", e)
-
-            # Phase 10: sequential transcode to limit CPU/RAM (3× parallel caused OOM)
-            for q, w, h, br in RENDITIONS_SPEC:
-                log.info("transcoding %s sequentially (fps=%d)", q, fps)
-                transcode_one(raw_path, audio_path, outputs[q], w, h, br, fps=fps)
-
-            # thumbnail (non-blocking for ready, but upload if exists)
-            thumb_key: str | None = None
-            thumb_path = os.path.join(tmp, "thumb.jpg")
-            transcode_thumbnail(raw_path, thumb_path)
-            if os.path.exists(thumb_path):
-                try:
-                    thumb_key = f"thumbnails/{video_id}/thumb.jpg"
-                    mc.fput_object(BUCKET, thumb_key, thumb_path, content_type="image/jpeg")
-                    log.info("uploaded thumbnail %s", thumb_key)
-                except Exception as e:
-                    log.warning("thumbnail upload failed: %s", e)
-                    thumb_key = None
-
-            # upload renditions
-            renditions = []
-            for q, w, h, br in RENDITIONS_SPEC:
-                rk = f"renditions/{video_id}/{q}.mp4"
-                log.info("uploading %s -> s3://%s/%s", outputs[q], BUCKET, rk)
-                mc.fput_object(BUCKET, rk, outputs[q], content_type="video/mp4")
-                renditions.append(
-                    {"quality": q, "bitrate": br, "width": w, "height": h, "s3_key": rk}
+    with tempfile.TemporaryDirectory() as tmp:
+        # Phase 10: disk check before download (avoid filling /tmp on large files)
+        try:
+            free = shutil.disk_usage(tmp).free
+            # need at least 2× raw size free (raw + renditions); conservative 500MB min
+            if free < 500 * 1024 * 1024:
+                log.error(
+                    "low disk space in %s: free=%d bytes, aborting %s", tmp, free, video_id
                 )
-                log.info("rendition %s -> %s", q, rk)
+                raise RuntimeError(f"low disk space: {free} bytes free")
+        except Exception as e:
+            if "low disk space" in str(e):
+                raise
+            log.warning("disk_usage check failed: %s", e)
 
-    except Exception as e:
-        log.error("transcode pipeline failed for %s: %s", video_id, e)
-        update_status(video_id, "failed")
-        return
+        raw_path = os.path.join(tmp, "original.mp4")
+        log.info("downloading s3://%s/%s -> %s", BUCKET, s3_key, raw_path)
+        try:
+            mc.fget_object(BUCKET, s3_key, raw_path)
+        except AttributeError:
+            log.warning("fget_object not available, falling back to copy test stub")
+            raise
+
+        probe = probe_video(raw_path)
+        fps = _fps_from_probe(probe)
+
+        # prepare output paths
+        outputs: dict[str, str] = {}
+        for q, w, h, br in RENDITIONS_SPEC:
+            outputs[q] = os.path.join(tmp, f"{q}.mp4")
+
+        # Shared audio track for all renditions (see encode_audio). Sources
+        # without a usable audio stream stay video-only rather than failing.
+        audio_path: str | None = None
+        try:
+            candidate = os.path.join(tmp, "audio.m4a")
+            encode_audio(raw_path, candidate)
+            audio_path = candidate
+        except Exception as e:
+            log.warning("no usable audio track (%s), renditions will be video-only", e)
+
+        # Phase 10: sequential transcode to limit CPU/RAM (3× parallel caused OOM)
+        for q, w, h, br in RENDITIONS_SPEC:
+            log.info("transcoding %s sequentially (fps=%d)", q, fps)
+            transcode_one(raw_path, audio_path, outputs[q], w, h, br, fps=fps)
+
+        # thumbnail (non-blocking for ready, but upload if exists)
+        thumb_key: str | None = None
+        thumb_path = os.path.join(tmp, "thumb.jpg")
+        transcode_thumbnail(raw_path, thumb_path)
+        if os.path.exists(thumb_path):
+            try:
+                thumb_key = f"thumbnails/{video_id}/thumb.jpg"
+                mc.fput_object(BUCKET, thumb_key, thumb_path, content_type="image/jpeg")
+                log.info("uploaded thumbnail %s", thumb_key)
+            except Exception as e:
+                log.warning("thumbnail upload failed: %s", e)
+                thumb_key = None
+
+        # upload renditions
+        renditions = []
+        for q, w, h, br in RENDITIONS_SPEC:
+            rk = f"renditions/{video_id}/{q}.mp4"
+            log.info("uploading %s -> s3://%s/%s", outputs[q], BUCKET, rk)
+            mc.fput_object(BUCKET, rk, outputs[q], content_type="video/mp4")
+            renditions.append(
+                {"quality": q, "bitrate": br, "width": w, "height": h, "s3_key": rk}
+            )
+            log.info("rendition %s -> %s", q, rk)
 
     update_status(video_id, "ready", renditions, thumb_key)
 
@@ -386,16 +431,93 @@ def main():
         try:
             conn = pika.BlockingConnection(params)
             channel = conn.channel()
-            channel.queue_declare(queue=QUEUE, durable=True)
+            try:
+                declare_topology(channel)
+            except Exception as decl_e:
+                msg = str(decl_e)
+                if "PRECONDITION" in msg or "inequivalent" in msg:
+                    log.warning("topology mismatch, attempting to recreate queue: %s", decl_e)
+                    try:
+                        channel.close()
+                    except Exception:
+                        pass
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    # delete stale main queue via temp connection, then retry on next loop
+                    try:
+                        tmp_conn = pika.BlockingConnection(params)
+                        tmp_ch = tmp_conn.channel()
+                        tmp_ch.queue_delete(queue=QUEUE)
+                        log.info("deleted stale queue %s, will redeclare", QUEUE)
+                        tmp_ch.close()
+                        tmp_conn.close()
+                    except Exception as del_e:
+                        log.warning("delete stale queue failed: %s", del_e)
+                    time.sleep(2)
+                    continue
+                raise
             channel.basic_qos(prefetch_count=1)
 
             def on_message(ch, method, properties, body):
+                headers = {}
+                if properties and getattr(properties, "headers", None):
+                    headers = properties.headers or {}
+                retry_count = 0
+                if headers:
+                    try:
+                        retry_count = int(headers.get("x-retry-count", 0) or 0)
+                    except Exception:
+                        retry_count = 0
                 try:
                     process_message(body)
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                 except Exception as e:
                     log.exception("process failed: %s", e)
-                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                    if retry_count < MAX_RETRIES:
+                        try:
+                            new_headers = dict(headers) if headers else {}
+                            new_headers["x-retry-count"] = retry_count + 1
+                            props = pika.BasicProperties(
+                                delivery_mode=2,
+                                headers=new_headers,
+                                content_type="application/json",
+                            )
+                            ch.basic_publish(
+                                exchange="",
+                                routing_key=RETRY_QUEUE,
+                                body=body,
+                                properties=props,
+                            )
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
+                            log.info(
+                                "requeued to %s %d/%d (retry %d)",
+                                RETRY_QUEUE,
+                                retry_count + 1,
+                                MAX_RETRIES,
+                                retry_count + 1,
+                            )
+                        except Exception as pub_e:
+                            log.exception("retry publish failed: %s", pub_e)
+                            try:
+                                data = json.loads(body)
+                                vid = data.get("video_id")
+                                if vid:
+                                    update_status(vid, "failed")
+                            except Exception:
+                                pass
+                            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                    else:
+                        try:
+                            data = json.loads(body)
+                            vid = data.get("video_id")
+                            if vid:
+                                update_status(vid, "failed")
+                        except Exception:
+                            pass
+                        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                        log.error("moved to DLQ %s after %d retries", DLQ, MAX_RETRIES)
 
             channel.basic_consume(queue=QUEUE, on_message_callback=on_message)
             log.info(

@@ -128,6 +128,14 @@ func (r *VideoRepo) UpdateStatus(ctx context.Context, id string, status model.Vi
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var cur string
+	if err := tx.QueryRow(ctx, `SELECT status FROM videos WHERE id=$1 FOR UPDATE`, id).Scan(&cur); err != nil {
+		return err
+	}
+	// Idempotency: don't downgrade terminal ready → processing/uploaded (redelivery after heartbeat timeout).
+	if cur == string(model.StatusReady) && (status == model.StatusProcessing || status == model.StatusUploaded) {
+		return tx.Commit(ctx)
+	}
 	if _, err := tx.Exec(ctx, `UPDATE videos SET status=$1 WHERE id=$2`, status, id); err != nil {
 		return err
 	}
