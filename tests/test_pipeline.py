@@ -170,6 +170,7 @@ def test_full_pipeline():
         patch("app.consumer.get_minio", return_value=fake_minio),
         patch("app.consumer.update_status") as mock_status,
         patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.encode_audio", return_value=None),
         patch("app.consumer.transcode_one", return_value=None),
         patch("app.consumer.transcode_thumbnail", return_value=None),
     ):

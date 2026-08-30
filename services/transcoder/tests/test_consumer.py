@@ -43,6 +43,7 @@ def test_process_message_success():
         patch("app.consumer.get_minio", return_value=fake_minio),
         patch("app.consumer.update_status") as mock_status,
         patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.encode_audio", return_value=None),
         patch("app.consumer.transcode_one", return_value=None),
         patch("app.consumer.transcode_thumbnail", return_value=None),
     ):
@@ -103,6 +104,7 @@ def test_process_message_transcode_failure_marks_failed():
         patch("app.consumer.get_minio", return_value=fake_minio),
         patch("app.consumer.update_status") as mock_status,
         patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.encode_audio", return_value=None),
         patch("app.consumer.transcode_one", side_effect=Exception("ffmpeg error")),
         patch("app.consumer.transcode_thumbnail", return_value=None),
     ):
@@ -113,7 +115,7 @@ def test_process_message_transcode_failure_marks_failed():
 def test_transcode_one_builds_aligned_cmd():
     with patch("app.consumer.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock()
-        cons.transcode_one("/tmp/in.mp4", "/tmp/out.mp4", 1280, 720, 2500, "128k")
+        cons.transcode_one("/tmp/in.mp4", "/tmp/audio.m4a", "/tmp/out.mp4", 1280, 720, 2500)
         cmd = mock_run.call_args[0][0]
         assert "ffmpeg" in cmd
         assert "-force_key_frames" in cmd
@@ -122,6 +124,71 @@ def test_transcode_one_builds_aligned_cmd():
         assert "-r" in cmd and "30" in cmd
         assert "-sc_threshold" in cmd and "0" in cmd
         assert "scale=-2:720" in " ".join(cmd)
+        # shared audio track is copied, never re-encoded per rendition
+        assert "/tmp/audio.m4a" in cmd
+        assert cmd[cmd.index("-c:a") + 1] == "copy"
+        assert "-map" in cmd and "1:a:0" in cmd
+
+
+def test_transcode_one_without_audio_is_video_only():
+    with patch("app.consumer.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock()
+        cons.transcode_one("/tmp/in.mp4", None, "/tmp/out.mp4", 1280, 720, 2500)
+        cmd = mock_run.call_args[0][0]
+        assert "-an" in cmd
+        assert "-c:a" not in cmd
+
+
+def test_encode_audio_single_normalized_track():
+    with patch("app.consumer.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock()
+        cons.encode_audio("/tmp/in.mp4", "/tmp/audio.m4a")
+        cmd = mock_run.call_args[0][0]
+        assert "-vn" in cmd
+        assert cmd[cmd.index("-c:a") + 1] == "aac"
+        assert cmd[cmd.index("-b:a") + 1] == cons.AUDIO_BITRATE
+        # fixed sample rate / channel layout keeps every rendition byte-identical
+        assert cmd[cmd.index("-ar") + 1] == "48000"
+        assert cmd[cmd.index("-ac") + 1] == "2"
+
+
+def test_process_message_shares_one_audio_track():
+    body = json.dumps({"video_id": "vid-9", "s3_key": "raw/vid-9/original.mp4"}).encode()
+    fake_minio = MagicMock()
+
+    with (
+        patch("app.consumer.get_minio", return_value=fake_minio),
+        patch("app.consumer.update_status"),
+        patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.encode_audio") as mock_audio,
+        patch("app.consumer.transcode_one") as mock_transcode,
+        patch("app.consumer.transcode_thumbnail", return_value=None),
+    ):
+        cons.process_message(body)
+
+        mock_audio.assert_called_once()
+        audio_path = mock_audio.call_args[0][1]
+        assert mock_transcode.call_count == 3
+        # every rendition stream-copies the same audio file
+        assert {c[0][1] for c in mock_transcode.call_args_list} == {audio_path}
+
+
+def test_process_message_audio_failure_falls_back_to_video_only():
+    body = json.dumps({"video_id": "vid-8", "s3_key": "raw/vid-8/original.mp4"}).encode()
+    fake_minio = MagicMock()
+
+    with (
+        patch("app.consumer.get_minio", return_value=fake_minio),
+        patch("app.consumer.update_status") as mock_status,
+        patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.encode_audio", side_effect=Exception("no audio stream")),
+        patch("app.consumer.transcode_one") as mock_transcode,
+        patch("app.consumer.transcode_thumbnail", return_value=None),
+    ):
+        cons.process_message(body)
+
+        assert mock_status.call_args_list[-1][0][1] == "ready"
+        assert {c[0][1] for c in mock_transcode.call_args_list} == {None}
 
 
 def test_probe_video_handles_missing_ffprobe():
