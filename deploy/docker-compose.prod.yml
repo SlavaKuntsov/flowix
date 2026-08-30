@@ -47,6 +47,9 @@ services:
       LOG_LEVEL: warn
       FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
       FFMPEG_PRESET: ${FFMPEG_PRESET:-veryfast}
+      ENCODE_MODE: ${ENCODE_MODE:-cbr}
+      FFMPEG_HWACCEL: ${FFMPEG_HWACCEL:-auto}
+      TRANSCODER_PIPE_INPUT: ${TRANSCODER_PIPE_INPUT:-true}
     deploy:
       resources:
         limits:

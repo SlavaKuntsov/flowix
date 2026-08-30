@@ -195,6 +195,9 @@ services:
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
       FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
       FFMPEG_PRESET: ${FFMPEG_PRESET:-veryfast}
+      ENCODE_MODE: ${ENCODE_MODE:-cbr}
+      FFMPEG_HWACCEL: ${FFMPEG_HWACCEL:-auto}
+      TRANSCODER_PIPE_INPUT: ${TRANSCODER_PIPE_INPUT:-true}
     depends_on:
       rabbitmq:
         condition: service_healthy

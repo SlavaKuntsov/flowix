@@ -49,12 +49,13 @@ def test_process_message_success():
     ):
         cons.process_message(body)
 
-        # processing then ready
-        assert mock_status.call_count == 2
+        # processing (initial) + incremental processing per rendition (except last) + ready
+        # Phase 12: 720p first incremental updates — total 4 calls for 3 renditions
+        assert mock_status.call_count >= 2
         assert mock_status.call_args_list[0][0] == ("vid-123", "processing")
-        assert mock_status.call_args_list[1][0][0] == "vid-123"
-        assert mock_status.call_args_list[1][0][1] == "ready"
-        renditions = mock_status.call_args_list[1][0][2]
+        assert mock_status.call_args_list[-1][0][0] == "vid-123"
+        assert mock_status.call_args_list[-1][0][1] == "ready"
+        renditions = mock_status.call_args_list[-1][0][2]
         assert len(renditions) == 3
         assert {r["quality"] for r in renditions} == {"360p", "720p", "1080p"}
         # 3 renditions uploaded via fput (thumbnail maybe filtered)
@@ -235,12 +236,14 @@ def test_declare_topology():
     mock_ch = MagicMock()
     cons.declare_topology(mock_ch)
     mock_ch.exchange_declare.assert_called_once_with(exchange=cons.DLX_EXCHANGE, exchange_type="direct", durable=True)
-    # dlq, retry, main queues declared
-    assert mock_ch.queue_declare.call_count == 3
+    # dlq, retry, main + 3 fan-out queues (Phase 12)
+    assert mock_ch.queue_declare.call_count == 6
     calls = [c[1].get("queue") for c in mock_ch.queue_declare.call_args_list]
     assert cons.DLQ in calls
     assert cons.RETRY_QUEUE in calls
     assert cons.QUEUE in calls
+    for fq in cons.FANOUT_QUEUES:
+        assert fq in calls
     # retry queue has TTL
     retry_call = [c for c in mock_ch.queue_declare.call_args_list if c[1].get("queue") == cons.RETRY_QUEUE][0]
     assert retry_call[1]["arguments"]["x-message-ttl"] == cons.RETRY_TTL_MS

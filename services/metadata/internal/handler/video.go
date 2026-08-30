@@ -133,9 +133,10 @@ type vodClip struct {
 }
 
 // GetVODMapping returns the nginx-vod mapped-mode representation for a ready video.
+// Phase 12: adaptive ladder — accept 1..3 renditions (not fixed 3).
 func (h *VideoHandler) GetVODMapping(w http.ResponseWriter, r *http.Request) {
 	v, err := h.repo.GetByID(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || v.Status != model.StatusReady || len(v.Renditions) != 3 {
+	if err != nil || v.Status != model.StatusReady || len(v.Renditions) == 0 {
 		writeError(w, r, http.StatusNotFound, "video not ready")
 		return
 	}
