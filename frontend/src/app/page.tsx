@@ -35,7 +35,7 @@ export default function HomePage() {
       <h1 className="mb-4 text-xl font-semibold">Latest videos</h1>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {videos.map((v) => (
-          <VideoCard key={v.id} video={v} />
+          <VideoCard key={v.id} video={v} onDeleted={(id) => setVideos((prev) => prev.filter((x) => x.id !== id))} />
         ))}
       </div>
     </div>

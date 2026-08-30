@@ -31,6 +31,7 @@ export interface Rendition {
 export interface Video {
   id: string;
   owner_id: string;
+  owner_email?: string | null;
   title: string;
   description: string;
   duration?: number | null;
@@ -117,6 +118,9 @@ export async function createVideoMeta(title: string, description: string): Promi
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title, description }),
   });
+}
+export async function deleteVideo(id: string): Promise<void> {
+  return request<void>(`/api/v1/videos/${id}`, { method: "DELETE" });
 }
 
 // Upload: multipart via gateway -> upload service (requires auth)

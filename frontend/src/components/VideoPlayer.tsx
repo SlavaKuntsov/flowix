@@ -4,9 +4,14 @@ import Hls from "hls.js";
 import { usePlayer } from "@/store/player";
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
+// Never flush media closer than this to the playhead: the decoder is already
+// working on it, and replacing it is exactly what shows up as a dropped frame
+// or an audio click.
+const SWITCH_LEAD_SECONDS = 1;
 
 export default function VideoPlayer({ src, poster }: { src: string; poster?: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
   const { playbackRate, setPlaybackRate } = usePlayer();
   const [error, setError] = useState<string | null>(null);
   const [levels, setLevels] = useState<{ index: number; height: number; bitrate: number }[]>([]);
@@ -34,11 +39,8 @@ export default function VideoPlayer({ src, poster }: { src: string; poster?: str
     const hls = new Hls({
       enableWorker: true,
       lowLatencyMode: false,
-      // faster quality switch: keep buffer short so next segment loads quicker
-      maxBufferLength: 10,
-      maxMaxBufferLength: 15,
-      liveSyncDurationCount: 2,
     });
+    hlsRef.current = hls;
     hls.loadSource(src);
     hls.attachMedia(video);
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -46,12 +48,20 @@ export default function VideoPlayer({ src, poster }: { src: string; poster?: str
       setLevels(lvls);
       video.play().catch(() => {});
     });
-    hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
-      setActualLevel(data.level);
-      setPendingLevel(null);
+    // FRAG_CHANGED, not LEVEL_SWITCHED: the level switches when hls.js starts
+    // appending the new rendition, but the viewer only sees it once the playhead
+    // enters that fragment. Reporting the earlier event is what made the button
+    // look done while the picture was still the old quality.
+    hls.on(Hls.Events.FRAG_CHANGED, (_e, data) => {
+      setActualLevel(data.frag.level);
+      setPendingLevel((p) => (p === -1 || p === data.frag.level ? null : p));
     });
-    hls.on(Hls.Events.LEVEL_SWITCHING, (_e, data) => {
-      // optional: could set pending here too
+    // While paused FRAG_CHANGED never fires (the playhead does not move), so fall
+    // back to the level commit event to clear the indicator.
+    hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
+      if (!video.paused) return;
+      setActualLevel(data.level);
+      setPendingLevel((p) => (p === -1 || p === data.level ? null : p));
     });
     hls.on(Hls.Events.ERROR, (_e, data) => {
       if (data.fatal) {
@@ -61,10 +71,8 @@ export default function VideoPlayer({ src, poster }: { src: string; poster?: str
       }
     });
 
-    // expose for quality switch
-    (video as unknown as { _hls: Hls })._hls = hls;
-
     return () => {
+      hlsRef.current = null;
       hls.destroy();
     };
   }, [src]);
@@ -74,18 +82,41 @@ export default function VideoPlayer({ src, poster }: { src: string; poster?: str
   }, [playbackRate]);
 
   const handleQuality = (idx: number) => {
+    const hls = hlsRef.current;
+    const video = videoRef.current;
+    if (!hls || !video || idx === currentLevel) return;
+
+    // Segment boundaries are identical across renditions (aligned GOPs), so any
+    // loaded level's fragment list gives the switch points — which is what makes
+    // a rapid second click work, when the level just picked has no playlist yet.
+    const details =
+      hls.levels[hls.currentLevel]?.details ?? hls.levels.find((l) => l.details)?.details;
+
     setCurrentLevel(idx);
     setPendingLevel(idx);
-    const video = videoRef.current as unknown as { _hls?: Hls } | null;
-    const hls = video?._hls;
-    if (hls) {
-      // hls.js 1.x: nextLevel is the preferred API, currentLevel also works but we set both for compat
-      (hls as unknown as { nextLevel: number }).nextLevel = idx;
-      hls.currentLevel = idx;
-      // clear pending after segment duration (fallback if LEVEL_SWITCHED not fired)
-      setTimeout(() => setPendingLevel((p) => (p === idx ? null : p)), 2500);
-    } else {
-      setPendingLevel(null);
+
+    // nextLevel, not currentLevel: currentLevel calls immediateLevelSwitch(),
+    // which pauses and drops the whole buffer including the frame on screen —
+    // that is the freeze-then-jump. nextLevel keeps the playhead's media intact.
+    hls.nextLevel = idx;
+
+    // nextLevel alone picks its flush point via a bandwidth-based fetch delay,
+    // which on a 2s-segment stream lands 4-6s out and feels like the click did
+    // nothing. Redo the forward flush from the first segment starting a full
+    // SWITCH_LEAD_SECONDS ahead instead, so the new quality arrives within a
+    // segment while the flush still never reaches the decoded region.
+    // Auto is excluded on purpose: ABR would just refill what we dropped, and a
+    // thin buffer biases it toward picking a lower rendition.
+    if (idx === -1) return;
+    const target = details?.fragments.find(
+      (f) => f.start >= video.currentTime + SWITCH_LEAD_SECONDS,
+    );
+    if (target) {
+      hls.trigger(Hls.Events.BUFFER_FLUSHING, {
+        startOffset: target.start + target.duration / 2,
+        endOffset: Infinity,
+        type: null,
+      });
     }
   };
 
