@@ -25,11 +25,23 @@ type VideoStore interface {
 	UpdateThumbnail(ctx context.Context, id string, thumbnailS3Key string) error
 }
 
+// StorageRemover deletes S3 objects (raw + renditions + thumbnail). Nil = skip (tests).
+type StorageRemover interface {
+	RemoveObjects(ctx context.Context, keys []string)
+	RemovePrefix(ctx context.Context, prefix string)
+}
+
 type VideoHandler struct {
-	repo VideoStore
+	repo    VideoStore
+	storage StorageRemover
 }
 
 func NewVideoHandler(repo VideoStore) *VideoHandler { return &VideoHandler{repo: repo} }
+
+// NewVideoHandlerWithStorage is used in prod to also clean MinIO.
+func NewVideoHandlerWithStorage(repo VideoStore, s StorageRemover) *VideoHandler {
+	return &VideoHandler{repo: repo, storage: s}
+}
 
 func (h *VideoHandler) Register(r chi.Router) {
 	// public: health
@@ -213,6 +225,23 @@ func (h *VideoHandler) Update(w http.ResponseWriter, r *http.Request) {
 func (h *VideoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	ownerID := middleware.UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
+	// fetch first for S3 keys (need renditions + thumbnail before DB delete)
+	var keys []string
+	if h.storage != nil {
+		if v, err := h.repo.GetByID(r.Context(), id); err == nil {
+			keys = append(keys, "raw/"+id+"/original.mp4")
+			for _, rn := range v.Renditions {
+				if rn.S3Key != "" {
+					keys = append(keys, rn.S3Key)
+				}
+			}
+			if v.ThumbnailS3Key != nil && *v.ThumbnailS3Key != "" {
+				keys = append(keys, *v.ThumbnailS3Key)
+			} else {
+				keys = append(keys, "thumbnails/"+id+"/thumb.jpg")
+			}
+		}
+	}
 	if err := h.repo.Delete(r.Context(), id, ownerID); err != nil {
 		if err.Error() == "forbidden" {
 			writeError(w, r, http.StatusForbidden, "forbidden")
@@ -220,6 +249,15 @@ func (h *VideoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, r, http.StatusNotFound, "not found")
 		return
+	}
+	if h.storage != nil {
+		if len(keys) > 0 {
+			h.storage.RemoveObjects(r.Context(), keys)
+		}
+		// Also clean prefix orphans (e.g., video deleted while transcoding — renditions not yet in DB)
+		h.storage.RemovePrefix(r.Context(), "renditions/"+id+"/")
+		h.storage.RemovePrefix(r.Context(), "raw/"+id+"/")
+		h.storage.RemovePrefix(r.Context(), "thumbnails/"+id+"/")
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

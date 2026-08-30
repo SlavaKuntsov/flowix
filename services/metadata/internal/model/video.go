@@ -14,6 +14,7 @@ const (
 type Video struct {
 	ID             string      `json:"id"`
 	OwnerID        string      `json:"owner_id"`
+	OwnerEmail     *string     `json:"owner_email,omitempty"`
 	Title          string      `json:"title"`
 	Description    string      `json:"description"`
 	Duration       *int        `json:"duration,omitempty"`

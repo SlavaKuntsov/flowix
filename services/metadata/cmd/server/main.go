@@ -23,6 +23,7 @@ import (
 	"flowix/metadata/internal/handler"
 	mw "flowix/metadata/internal/middleware"
 	"flowix/metadata/internal/repository"
+	"flowix/metadata/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -46,6 +47,17 @@ func main() {
 		jwtSecret = "change-me-super-secret-jwt-key-32chars"
 	}
 	internalToken := os.Getenv("INTERNAL_TOKEN")
+	minioEndpoint := os.Getenv("MINIO_ENDPOINT")
+	if minioEndpoint == "" {
+		minioEndpoint = "minio:9000"
+	}
+	bucket := os.Getenv("VIDEO_STORAGE_BUCKET")
+	if bucket == "" {
+		bucket = "videos"
+	}
+	minioAccess := os.Getenv("MINIO_ACCESS_KEY")
+	minioSecret := os.Getenv("MINIO_SECRET_KEY")
+	secure, _ := strconv.ParseBool(os.Getenv("MINIO_SECURE"))
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
 	pool, err := pgxpool.New(context.Background(), dbURL)
@@ -59,7 +71,18 @@ func main() {
 	logger.Info().Str("port", port).Msg("metadata starting")
 
 	repo := repository.NewVideoRepo(pool)
-	vh := handler.NewVideoHandler(repo)
+	var vh *handler.VideoHandler
+	if minioEndpoint != "" && minioAccess != "" {
+		if store, err := storage.NewMinioClient(minioEndpoint, minioAccess, minioSecret, bucket, secure); err == nil {
+			vh = handler.NewVideoHandlerWithStorage(repo, store)
+			logger.Info().Str("bucket", bucket).Msg("metadata MinIO storage enabled for delete")
+		} else {
+			logger.Warn().Err(err).Msg("minio init failed, delete will not clean S3")
+			vh = handler.NewVideoHandler(repo)
+		}
+	} else {
+		vh = handler.NewVideoHandler(repo)
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger, middleware.Recoverer, middleware.RequestID)

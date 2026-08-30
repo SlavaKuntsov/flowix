@@ -346,6 +346,13 @@ const docTemplate = `{
                 },
                 "status": {
                     "$ref": "#/definitions/flowix_metadata_internal_model.VideoStatus"
+                },
+                "thumbnail_s3_key": {
+                    "type": "string"
+                },
+                "thumbnail_url": {
+                    "description": "alias for thumbnail_s3_key",
+                    "type": "string"
                 }
             }
         },
@@ -386,6 +393,12 @@ const docTemplate = `{
                 },
                 "status": {
                     "$ref": "#/definitions/flowix_metadata_internal_model.VideoStatus"
+                },
+                "thumbnail_s3_key": {
+                    "type": "string"
+                },
+                "thumbnail_url": {
+                    "type": "string"
                 },
                 "title": {
                     "type": "string"

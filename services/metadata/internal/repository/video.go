@@ -24,6 +24,8 @@ func (r *VideoRepo) Create(ctx context.Context, ownerID, title, description stri
 	if err != nil {
 		return nil, fmt.Errorf("create video: %w", err)
 	}
+	// fetch owner_email for response (best-effort)
+	_ = r.pool.QueryRow(ctx, `SELECT email FROM users WHERE id=$1`, ownerID).Scan(&v.OwnerEmail)
 	if v.ThumbnailS3Key != nil {
 		u := "/thumbnails/" + v.ID + "/thumb.jpg"
 		v.ThumbnailURL = &u
@@ -32,9 +34,9 @@ func (r *VideoRepo) Create(ctx context.Context, ownerID, title, description stri
 }
 
 func (r *VideoRepo) GetByID(ctx context.Context, id string) (*model.Video, error) {
-	q := `SELECT id, owner_id, title, description, duration, status, thumbnail_s3_key, created_at FROM videos WHERE id=$1`
+	q := `SELECT v.id, v.owner_id, u.email, v.title, v.description, v.duration, v.status, v.thumbnail_s3_key, v.created_at FROM videos v LEFT JOIN users u ON u.id=v.owner_id WHERE v.id=$1`
 	v := &model.Video{}
-	err := r.pool.QueryRow(ctx, q, id).Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.ThumbnailS3Key, &v.CreatedAt)
+	err := r.pool.QueryRow(ctx, q, id).Scan(&v.ID, &v.OwnerID, &v.OwnerEmail, &v.Title, &v.Description, &v.Duration, &v.Status, &v.ThumbnailS3Key, &v.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +61,7 @@ func (r *VideoRepo) GetByID(ctx context.Context, id string) (*model.Video, error
 }
 
 func (r *VideoRepo) List(ctx context.Context, limit, offset int) ([]model.Video, error) {
-	q := `SELECT id, owner_id, title, description, duration, status, thumbnail_s3_key, created_at FROM videos ORDER BY created_at DESC LIMIT $1 OFFSET $2`
+	q := `SELECT v.id, v.owner_id, u.email, v.title, v.description, v.duration, v.status, v.thumbnail_s3_key, v.created_at FROM videos v LEFT JOIN users u ON u.id=v.owner_id ORDER BY v.created_at DESC LIMIT $1 OFFSET $2`
 	rows, err := r.pool.Query(ctx, q, limit, offset)
 	if err != nil {
 		return nil, err
@@ -68,7 +70,7 @@ func (r *VideoRepo) List(ctx context.Context, limit, offset int) ([]model.Video,
 	var out []model.Video
 	for rows.Next() {
 		var v model.Video
-		if err := rows.Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.ThumbnailS3Key, &v.CreatedAt); err == nil {
+		if err := rows.Scan(&v.ID, &v.OwnerID, &v.OwnerEmail, &v.Title, &v.Description, &v.Duration, &v.Status, &v.ThumbnailS3Key, &v.CreatedAt); err == nil {
 			if v.ThumbnailS3Key != nil {
 				u := "/thumbnails/" + v.ID + "/thumb.jpg"
 				v.ThumbnailURL = &u
