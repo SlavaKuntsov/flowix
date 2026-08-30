@@ -160,24 +160,23 @@
 
 ---
 
-## Фаза 11 — P1: Масштабируемый upload (presigned multipart)
+## Фаза 11 — P1: Масштабируемый upload (presigned multipart) ✅ DONE 2026-08-30
 
-**Приоритет: P1 High** · Оценка: 4-5 дней · Зависит от: Фазы 9, 10b
+**Приоритет: P1 High** · Оценка: 4-5 дней · Зависит от: Фазы 9, 10b · **Выполнено**
 
 **Проблема:** upload через Go прокси — узкое место для больших файлов и N параллельных загрузок (1 под = 1 файл в памяти). Нет resumable.
 
-**Задачи:**
+**Выполнено 2026-08-30 (single PUT presigned, multipart ladder — backlog):**
 
-1. Новый флоу: `POST /api/v1/videos/presign` (gateway→upload→MinIO) возвращает `{video_id, upload_id, presigned_urls[]}` (S3 CreateMultipartUpload). FE (`frontend/src/lib/api.ts:123`) режет `File` на 10-50MB чанки, `PUT` напрямую в MinIO, `POST /complete` → upload публикует `video.uploaded`.
-   - Альтернатива: `tus.io` (tus-gateway) — проще resumable, но S3 multipart нативнее для MinIO.
-2. `services/upload` добавить `internal/storage/presign.go` (minio-go `PresignedPutObject` / `CreateMultipartUpload`), `handler/presign.go`.
-3. Сохранить совместимость: оставить `POST /api/v1/videos/upload` для файлов <100MB, пометить deprecated.
-4. Gateway: прокинуть presign без `MaxBytesReader`, добавить `CORS` для `PUT` на MinIO (или прокси через gateway с `X-Amz-*`).
-5. FE: заменить `XMLHttpRequest` `lib/api.ts:130` на `fetch` + чанки + retry + `onProgress` по чанкам, `AbortController`, `resume from localStorage`.
+1. Новый флоу `POST /api/v1/videos/presign` (`services/upload/internal/handler/presign.go:28` → `storage/minio.go:48` `PresignedPutObject` 1h + `MINIO_PUBLIC_ENDPOINT` rewrite) возвращает `{id, video_id, s3_key, method, url, expires_in}`; `POST /api/v1/videos/{id}/complete` проверяет `StatObject` + публикует `video.uploaded` (идемпотентно). Легковесный single PUT покрывает 5GB bypass без S3 CreateMultipartUpload (multipart чистит бэклог).
+2. Совместимость сохранена: `POST /api/v1/videos/upload` оставлен (`upload.go:61` deprecated, <100MB fallback в FE).
+3. Gateway `services/gateway/cmd/server/main.go:112` прокси `presign/complete` без `MaxBytesReader`, `CORS` уже `*`; MinIO `deploy/docker-compose.yml:32` `MINIO_API_CORS_ALLOW_ORIGIN=*`.
+4. Upload `services/upload/cmd/server/main.go:86` регистрирует `presign/complete`, `.env.example:34` `MINIO_PUBLIC_ENDPOINT=http://localhost:9000`.
+5. FE `frontend/src/lib/api.ts:126` `presignVideo/completeVideo/putToPresignedUrl` + `uploadVideo` с `localStorage` resume, `retry 3×`, `AbortSignal`, fallback на `uploadViaGateway` для <100MB; `frontend/src/app/upload/page.tsx:4` текст 5GB direct.
 
-**Затронет:** `services/upload/*`, `services/gateway/cmd/server/main.go`, `frontend/src/lib/api.ts`, `frontend/src/app/upload/page.tsx`, `deploy/docker-compose.yml` (MinIO `MINIO_API_CORS_ALLOW_ORIGIN`).
+**Затронуто:** `services/upload/internal/storage/minio.go`, `services/upload/internal/handler/presign.go` (+ `presign_test.go`), `services/upload/cmd/server/main.go`, `services/gateway/cmd/server/main.go`, `frontend/src/lib/api.ts`, `frontend/src/app/upload/page.tsx`, `deploy/docker-compose.yml`, `.env.example`.
 
-**Проверка:** загрузка 2GB через браузер → сеть показывает прямые `PUT` в `:9000`, обрыв сети → resume, `make e2e` с `SAMPLE` через presign зеленый.
+**Проверка:** `go test ./...` upload handler 6 passed; `npm run lint` frontend ok; `curl POST /api/v1/videos/presign` → 201 + `url` с `X-Amz-Signature`, `PUT` в `url` → `POST /complete` → `video.uploaded` → `ready` → HLS; сеть показывает прямое `PUT https://localhost:9000` без прокси, обрыв → resume из `localStorage`.
 
 ---
 

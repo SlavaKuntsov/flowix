@@ -70,6 +70,7 @@ func main() {
 
 	metaCl := client.NewMetadataClient(metadataURL)
 	uh := handler.NewUploadHandler(store, pub, metaCl)
+	ph := handler.NewPresignHandler(store, pub, metaCl)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger, middleware.Recoverer, middleware.RequestID)
@@ -86,6 +87,9 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(mw.AuthMiddleware(jwtSecret))
 		r.Post("/api/v1/videos/upload", uh.Upload)
+		r.Post("/api/v1/videos/presign", ph.Presign)
+		r.Post("/api/v1/videos/{id}/complete", ph.Complete)
+		r.Post("/api/v1/videos/complete", ph.Complete)
 	})
 
 	logger.Info().Str("port", port).Str("bucket", bucket).Str("metadata", metadataURL).Msg("upload starting")

@@ -111,6 +111,10 @@ func main() {
 	}
 	r.With(authMw, maxBytesMw).Post("/api/v1/videos/upload", uploadProxy.ServeHTTP)
 	r.With(authMw, maxBytesMw).Post("/api/v1/videos/upload/*", uploadProxy.ServeHTTP)
+	// --- Presigned upload: без MaxBytesReader (прямой PUT в MinIO), только JWT ---
+	r.With(authMw).Post("/api/v1/videos/presign", uploadProxy.ServeHTTP)
+	r.With(authMw).Post("/api/v1/videos/complete", uploadProxy.ServeHTTP)
+	r.With(authMw).Post("/api/v1/videos/{id}/complete", uploadProxy.ServeHTTP)
 
 	// --- Metadata service ---
 	// Публичные GET (лист и деталь) — без JWT

@@ -41,7 +41,7 @@ export default function UploadPage() {
   return (
     <div className="mx-auto max-w-xl">
       <h1 className="text-xl font-semibold">Upload video</h1>
-      <p className="mt-1 text-sm text-zinc-500">MP4 up to ~500MB. Stored as raw, then transcoded to 3 renditions.</p>
+      <p className="mt-1 text-sm text-zinc-500">MP4 up to 5GB via presigned direct to MinIO. Stored as raw, then transcoded to 3 renditions.</p>
 
       {!email && (
         <div className="mt-4 rounded border border-yellow-200 bg-yellow-50 p-3 text-sm">

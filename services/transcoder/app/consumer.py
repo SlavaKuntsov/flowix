@@ -328,9 +328,7 @@ def process_message(body: bytes):
             free = shutil.disk_usage(tmp).free
             # need at least 2× raw size free (raw + renditions); conservative 500MB min
             if free < 500 * 1024 * 1024:
-                log.error(
-                    "low disk space in %s: free=%d bytes, aborting %s", tmp, free, video_id
-                )
+                log.error("low disk space in %s: free=%d bytes, aborting %s", tmp, free, video_id)
                 raise RuntimeError(f"low disk space: {free} bytes free")
         except Exception as e:
             if "low disk space" in str(e):
@@ -387,9 +385,7 @@ def process_message(body: bytes):
             rk = f"renditions/{video_id}/{q}.mp4"
             log.info("uploading %s -> s3://%s/%s", outputs[q], BUCKET, rk)
             mc.fput_object(BUCKET, rk, outputs[q], content_type="video/mp4")
-            renditions.append(
-                {"quality": q, "bitrate": br, "width": w, "height": h, "s3_key": rk}
-            )
+            renditions.append({"quality": q, "bitrate": br, "width": w, "height": h, "s3_key": rk})
             log.info("rendition %s -> %s", q, rk)
 
     update_status(video_id, "ready", renditions, thumb_key)
