@@ -82,6 +82,7 @@ Each service has its own `Dockerfile` and can be developed independently.
   - Multiple renditions (e.g., 360p, 720p, 1080p) with appropriate bitrates.
   - **Aligned segments**: use `-force_key_frames "expr:gte(t,n_forced*2)"` (for 2s segments) and `-sc_threshold 0`.
   - Ensure same framerate and codec across all renditions.
+  - **Shared audio track**: encode audio once (`-vn -c:a aac -b:a 128k -ar 48000 -ac 2`) and `-c:a copy` it into every rendition. Per-rendition audio encodes are not interchangeable — each carries its own encoder priming, so a mid-playback quality switch produces an audible click and an A/V resync.
   - For HLS packaging, either pre-segment or use nginx-vod's just-in-time mode (preferred: store single MP4 per rendition, let nginx-vod handle segmenting).
 - **Important**: Use `ffmpeg-python` or subprocess calls.
 

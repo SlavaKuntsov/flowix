@@ -1,6 +1,6 @@
 # Flowix — План реализации
 
-> Дата: 2026-08-30 (переписан после senior review 2026-08-29) · Обновлен: 2026-08-30 — Фазы 9-10 DONE
+> Дата: 2026-08-30 (переписан после senior review 2026-08-29) · Обновлен: 2026-08-30 — Фазы 9-11 DONE (удаление видео)
 > Стек: RabbitMQ + chi `go-chi/chi/v5` + nginx-vod JIT + Next.js 14
 > Исходники: `docs/spec.md:1` (ТЗ), `docs/services-pipeline.md:1` (пайплайн), `AGENTS.md:1` (гайдлайны)
 > Ревью-отчет: см. чат 2026-08-29 (P0/P1/P2 находки)
@@ -61,7 +61,7 @@
 `services/upload/internal/handler/upload.go:57` — multipart `POST /api/v1/videos/upload` → MinIO `raw/{id}/original.mp4` → RabbitMQ.
 
 ### Фаза 4 — Transcoder (pika + FFmpeg) ✅
-`services/transcoder/app/consumer.py:1` — download → ffprobe → 3× ffmpeg `-g 60 -force_key_frames expr:gte(t,n_forced*2)` (`consumer.py:119`) → `renditions/{id}/{360,720,1080}.mp4` → PATCH ready.
+`services/transcoder/app/consumer.py:1` — download → ffprobe → 1× ffmpeg audio (`audio.m4a`, общий для всех рипов) → 3× ffmpeg `-g 60 -force_key_frames expr:gte(t,n_forced*2) -c:a copy` → `renditions/{id}/{360,720,1080}.mp4` → PATCH ready.
 
 ### Фаза 5 — Streaming nginx-vod JIT ✅
 `deploy/nginx/nginx.conf:1` — `vod_mode mapped`, `proxy_pass minio:9000`, `vod_segment_duration 2000`.
@@ -69,8 +69,8 @@
 ### Фаза 6 — Gateway (Go chi) ✅
 `services/gateway/cmd/server/main.go:1` — `ReverseProxy` (`internal/proxy/proxy.go:15`), CORS, `RateLimit 20/40` (`internal/middleware/ratelimit.go:19`), JWT.
 
-### Фаза 7 — Frontend (Next 14) ✅
-`frontend/src/components/VideoPlayer.tsx:1` — `hls.js` + `quality/speed` (`frontend/src/lib/api.ts:15`).
+### Фаза 7 — Frontend (Next 14) ✅ (удаление — 2026-08-30)
+`frontend/src/components/VideoPlayer.tsx:1` — `hls.js` + `quality/speed` (`frontend/src/lib/api.ts:15`), `frontend/src/lib/api.ts:122` `deleteVideo(id)`, `watch/[id]/page.tsx:15` кнопка «Удалить» (owner only) + `VideoCard.tsx:1` `✕` на карточке, `services/metadata/internal/storage/minio.go:1` чистка S3 `raw/renditions/thumbnails`.
 
 ### Фаза 8 — Интеграция и харденинг ✅
 `scripts/e2e.sh:1` — `upload→poll ready→master.m3u8→ffprobe aligned segments→gateway /hls`, `make lint-*` зеленые, `deploy/docker-compose.prod.yml:1` (CDN Cache-Control).
@@ -234,6 +234,7 @@
 ## Бэклог (не в фазах)
 
 - ~~`golang-migrate` / `alembic` миграции вместо `init.sql` на проде.~~ ✅ **Выполнено 2026-08-30:** `deploy/migrations/000001_init.up.sql` (golang-migrate) + сервис `migrate` в `deploy/docker-compose.yml:22`, `deploy/postgres/init.sql` помечен legacy, `Makefile: migrate-up/down/create`, `services/auth/migrations/env.py` + `versions/0001_init.py` (alembic). См. `deploy/migrations/README.md:1`.
+- ~~Удаление видео.~~ ✅ **Выполнено 2026-08-30:** `DELETE /api/v1/videos/:id` (owner only, `metadata/internal/handler/video.go:213` + `storage/minio.go:29` + `RemovePrefix` для orphans mid-transcode, `metadata/cmd/server/main.go:1` MinIO env), `gateway` уже проксировал `DELETE`, `frontend` `deleteVideo` + кнопки на `watch` и `VideoCard`.
 - `Content-Range` resumable fallback для presign (если MinIO multipart не поддержан).
 - Rate-limit на `auth` login (brute-force) — `redis` + `slowapi`.
 - E2E `scripts/e2e.sh:189` расширить на presign + private HLS.

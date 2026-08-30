@@ -15,7 +15,7 @@
 
 ## ✨ Features
 
-- **Adaptive HLS streaming** — 360p / 720p / 1080p renditions, aligned segments (`-force_key_frames`, `-sc_threshold 0`), one codec / framerate
+- **Adaptive HLS streaming** — 360p / 720p / 1080p renditions, aligned segments (`-force_key_frames`, `-sc_threshold 0`), one codec / framerate / shared audio track
 - **JIT packaging** — only 3 MP4s stored, HLS/DASH segmented on-the-fly by `nginx-vod` (`vod_mode mapped`)
 - **Async pipeline** — `upload → RabbitMQ (video.uploaded) → Celery + FFmpeg → MinIO → metadata (ready) → HLS`
 - **Microservices** — Go (`chi`) for gateway/metadata/upload, Python (`FastAPI` + `Celery`) for auth/transcoder
