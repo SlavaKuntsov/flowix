@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Flowix Transcoding Worker — Celery + FFmpeg"
 requires-python = ">=3.14"
 dependencies = [
+  # celery+redis kept as legacy for make dev-transcoder-celery, will be removed in Phase 10b (pika is primary)
   "celery>=5.4,<6",
   "boto3>=1.35,<2",
   "minio>=7.2,<8",

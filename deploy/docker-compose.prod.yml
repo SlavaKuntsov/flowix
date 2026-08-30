@@ -45,6 +45,17 @@ services:
     environment:
       ENV: prod
       LOG_LEVEL: warn
+      FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
+      FFMPEG_PRESET: ${FFMPEG_PRESET:-veryfast}
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          memory: 1G
+      restart_policy:
+        condition: unless-stopped
 
   frontend:
     environment:

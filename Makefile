@@ -79,6 +79,8 @@ dev-auth:
 	uv run --project services/auth uvicorn src.main:app --reload --port 8001
 
 dev-transcoder:
+	uv run --project services/transcoder python -m app.consumer
+dev-transcoder-celery: # legacy, Phase 10 — celery deprecated, use dev-transcoder (pika)
 	uv run --project services/transcoder celery -A app.celery_app worker --loglevel=info
 
 dev-metadata:

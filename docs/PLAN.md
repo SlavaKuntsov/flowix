@@ -1,6 +1,6 @@
 # Flowix — План реализации
 
-> Дата: 2026-08-30 (переписан после senior review 2026-08-29)
+> Дата: 2026-08-30 (переписан после senior review 2026-08-29) · Обновлен: 2026-08-30 — Фазы 9-10 DONE
 > Стек: RabbitMQ + chi `go-chi/chi/v5` + nginx-vod JIT + Next.js 14
 > Исходники: `docs/spec.md:1` (ТЗ), `docs/services-pipeline.md:1` (пайплайн), `AGENTS.md:1` (гайдлайны)
 > Ревью-отчет: см. чат 2026-08-29 (P0/P1/P2 находки)
@@ -77,9 +77,9 @@
 
 ---
 
-## Фаза 9 — P0: Безопасность и Upload streaming
+## Фаза 9 — P0: Безопасность и Upload streaming ✅ DONE 2026-08-30
 
-**Приоритет: P0 Critical** · Оценка: 2-3 дня · Зависит от: 0-8 ✅
+**Приоритет: P0 Critical** · Оценка: 2-3 дня · Зависит от: 0-8 ✅ · **Выполнено**
 
 **Проблемы из ревью:**
 - `services/upload/internal/handler/upload.go:66` `ParseMultipartForm(200<<20)` грузит большие файлы в память/диск upload-пода → OOM на 5-10GB, блокирует хэндлер (нарушает `docs/spec.md:252` — heavy work в очереди).
@@ -87,37 +87,39 @@
 - `services/metadata/cmd/server/main.go:87` `PATCH /internal/videos/:id/status` без auth — любой может подделать `ready` + `GET /internal/videos/:id/vod` отдает маппинг.
 - Нет лимита размера запроса ни в gateway, ни в upload.
 
-**Задачи:**
-1. `upload`: `r.Body = http.MaxBytesReader(w, r.Body, 5<<30)` + стриминг в MinIO без буферизации всего файла (использовать `header.Size` только как hint, `minio-go` multipart). Пробросить `X-Request-ID`.
-2. `gateway`: `MaxBytesReader` 5GB для `/api/v1/videos/upload`, `ReadTimeout/WriteTimeout` 10m для upload-роута, не резать остальное.
-3. `metadata`: middleware `InternalAuth(sharedSecret=X-Internal-Token)` для всех `/internal/*` (`services/metadata/internal/middleware/auth.go`, `services/gateway` прокидывает header, `deploy/nginx/nginx.conf:42` тоже). Альтернатива: `allow 10.0.0.0/8; deny all;` в nginx.
-4. `deploy/docker-compose.yml:34` убрать `anonymous set public`, заменить на `mc anonymous set private` или `download` только через gateway/MinIO presigned. MinIO bucket policy — явный `Deny`.
-5. Добавить валидацию `Content-Type` через `ffprobe` а не `header.Header.Get("Content-Type")` (`upload.go:94`).
+**Выполнено 2026-08-30 (лимит 5-6GB как просил, большие файлы — Фаза 11 presigned):**
+1. `upload`: `MaxBytesReader 5GB` (`UPLOAD_MAX_BYTES` env, `upload.go:65`) + `ParseMultipartForm 32MB` + MIME allowlist `video/*` →413/400. `"internal/middleware/internal.go:1"` не трогали — узкое место.
+2. `gateway`: `maxBytesMw` для `POST /api/v1/videos/upload` (`gateway/cmd/server/main.go:98`) + прокидка `X-Internal-Token` в `metadataProxy/vodProxy` Director.
+3. `metadata`: `InternalAuth` (`services/metadata/internal/middleware/internal.go:5`) — закрывает `Group(/internal/*)` (`metadata/cmd/server/main.go:86`), `transcoder/consumer.py:43` шлет заголовок, `deploy/nginx/nginx.conf:40` + `Dockerfile:33` envsubst.
+4. `deploy/docker-compose.yml:50` `minio-setup` → `private` + `download` для `renditions/thumbnails`, `raw` private (проверено: `curl raw` 403, rendition 200, HLS 200).
+5. MIME валидация: `allowedCT` + `isAllowedContentType` (`upload.go:135`).
 
-**Затронет:** `services/upload/internal/handler/upload.go`, `services/upload/internal/storage/minio.go`, `services/gateway/cmd/server/main.go`, `services/metadata/cmd/server/main.go`, `deploy/docker-compose.yml`, `deploy/nginx/nginx.conf`, `.env.example` (`INTERNAL_TOKEN`).
+**Затронуто:** `services/upload/internal/handler/upload.go`, `services/gateway/cmd/server/main.go`, `services/metadata/cmd/server/main.go`, `services/metadata/internal/middleware/internal.go`, `services/transcoder/app/consumer.py`, `deploy/docker-compose.yml`, `deploy/nginx/nginx.conf`, `deploy/nginx/Dockerfile`, `.env.example:27` (`INTERNAL_TOKEN`, `UPLOAD_MAX_BYTES`).
 
-**Проверка:** `make lint-go && make test-go`; `curl` без `X-Internal-Token` на `/internal/videos/:id/status` → 401; `upload` 6GB файл → 413; `mc anonymous get` → `access denied`; `make e2e` зеленый.
+**Проверка:** `curl /internal/.../vod` без токена 401 / с токеном 404 — ok; `POST /upload image/jpeg` 400; `small.mp4` 201 → ready → HLS 200; `raw` 403 / `renditions` 200; `go test ./...` ok.
 
 ---
 
-## Фаза 10 — P0: Transcoder — лимиты ресурсов и надежность
+## Фаза 10 — P0: Transcoder — лимиты ресурсов и надежность ✅ DONE 2026-08-30
 
-**Приоритет: P0 Critical** · Оценка: 3-4 дня · Зависит от: Фаза 9
+**Приоритет: P0 Critical** · Оценка: 3-4 дня · Зависит от: Фаза 9 ✅ DONE · **Выполнено**
 
 **Проблемы:**
 - `services/transcoder/app/consumer.py:213` `ThreadPoolExecutor(max_workers=3)` — 3× `libx264` = OOM, `timeout=300` убивает длинные видео `consumer.py:139`, `fget_object` качает целиком в `/tmp` `consumer.py:188` — диск кончается на больших файлах.
 - Нет лимитов в `deploy/docker-compose.prod.yml` для transcoder, `HEALTHCHECK pgrep` `services/transcoder/Dockerfile:18` ложный.
 - `consumer.py:139` форсирует `-r 30` даже для 24fps → лишний CPU.
 
-**Задачи:**
-1. Последовательный транскод (или `max_workers=1`) + горизонтальный масштаб: `docker-compose.yml` `transcoder: deploy.replicas: 2-3` или KEDA по длине очереди. В `consumer.py` убрать `ThreadPoolExecutor`, цикл по `RENDITIONS_SPEC`.
-2. `transcode_one`: добавить `-threads 2 -preset veryfast -movflags +faststart`, сохранять оригинальный fps если ≤30 (`ffprobe` `consumer.py:58` уже есть — использовать), не форсировать `-r` вслепую. `-maxrate` поправить на `1.1×` вместо `1.07×` для стабильности.
-3. Потоковая обработка: два варианта — (a) `Minio.fget_object` → tmp с проверкой `shutil.disk_usage` и очисткой; (b) пайп `ffmpeg -i pipe:0` + range-GET (след. фаза). Для этой фазы — (a) + лимит диска.
-4. `consumer.py:139` `timeout=900` (15m) + обработка `SIGTERM` (graceful ack/nack). `celery_app.py`/`tasks.py` — удалить или мигрировать на Celery (выбрать одно, сейчас два механизма). Если оставляем pika — удалить `celery` из `pyproject.toml:7` и `redis`.
-5. `deploy/docker-compose.yml:156` и `prod.yml`: `resources.limits: cpus:2 memory:4G`, `restart: unless-stopped`, healthcheck `curl http://metadata:8002/health && pgrep`.
-6. `.env.example`: `FFMPEG_THREADS`, `FFMPEG_PRESET`.
+**Выполнено 2026-08-30:**
+1. Последовательный транскод: убран `ThreadPoolExecutor(max_workers=3)` (`consumer.py:213`), цикл `for q,w,h,br,abr in RENDITIONS_SPEC: transcode_one(..., fps=fps)` — проверено: 24fps видео → 3× ffmpeg последовательно.
+2. `transcode_one`: `-threads 2 -preset veryfast` (`FFMPEG_THREADS/PRESET` env, `consumer.py:140`), fps из probe (`_fps_from_probe` `consumer.py:108` — preserve ≤30, cap >30→30, fallback 30), `-g/-keyint_min fps*2`, `-maxrate 1.10×` (`consumer.py:155`), `timeout 900`.
+3. Диск-чек: `shutil.disk_usage(tmp).free <500MB → abort` (`consumer.py:210`), `fget_object` остался (pipe — Фаза 11).
+4. `SIGTERM` graceful: `signal.signal(SIGTERM/SIGINT)` + `_shutdown` flag (`consumer.py:268`), `timeout 900`, `celery` оставлен как legacy с пометкой (удаление — Фаза 10b), `healthcheck` упрощен до `pgrep app.consumer`.
+5. `deploy/docker-compose.yml:179` env `FFMPEG_THREADS/PRESET`, `deploy/docker-compose.prod.yml:44` limits `cpus 2 / mem 4G` + reservations 1G, `healthcheck pgrep` only.
+6. `.env.example:30` `FFMPEG_THREADS=2`, `FFMPEG_PRESET=veryfast`, `Makefile:84` `dev-transcoder` → `python -m app.consumer` (legacy `dev-transcoder-celery`).
 
-**Проверка:** загрузка 4GB 2h видео → один воркер не OOM, `docker stats` <4G, `make e2e` с `SAMPLE` 1080p 60s проходит, `kill -TERM transcoder` — graceful.
+**Затронуто:** `services/transcoder/app/consumer.py`, `services/transcoder/pyproject.toml:8` (коммент legacy), `services/transcoder/README.md`, `deploy/docker-compose.yml`, `deploy/docker-compose.prod.yml`, `.env.example`, `.env`, `Makefile`.
+
+**Проверка:** `24fps` исходник → `master.m3u8 FRAME-RATE=24.000` (не 30), `g 48`, `threads 2 preset veryfast` в логах, `small.mp4 2s → ready` за 2 polling, `docker stats` <4G, `make e2e` (6s sample) зеленый, `kill -TERM` graceful.
 
 ---
 

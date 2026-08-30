@@ -1,7 +1,8 @@
-import concurrent.futures
 import json
 import logging
 import os
+import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -23,6 +24,8 @@ BUCKET = os.getenv("VIDEO_STORAGE_BUCKET", "videos")
 METADATA_URL = os.getenv("METADATA_URL", "http://metadata:8002")
 INTERNAL_TOKEN = os.getenv("INTERNAL_TOKEN", "")
 QUEUE = "video.uploaded"
+FFMPEG_THREADS = os.getenv("FFMPEG_THREADS", "2")
+FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "veryfast")
 
 # rendition spec: (quality, width, height, video_bitrate_k, audio_bitrate)
 RENDITIONS_SPEC = [
@@ -90,6 +93,37 @@ def probe_video(path: str) -> dict | None:
         return None
 
 
+def _parse_fps(s: str | None) -> float | None:
+    if not s or "/" not in s:
+        return None
+    try:
+        n, d = s.split("/")
+        fps = float(n) / float(d) if float(d) != 0 else None
+        if fps and 1 <= fps <= 120:
+            return fps
+    except Exception:
+        pass
+    return None
+
+
+def _fps_from_probe(probe: dict | None) -> int:
+    """Phase 10: preserve original fps if ≤30, cap >30 to 30, fallback 30."""
+    if probe:
+        try:
+            streams = probe.get("streams") or []
+            if streams:
+                s = streams[0]
+                for k in ("avg_frame_rate", "r_frame_rate"):
+                    fps = _parse_fps(s.get(k))
+                    if fps:
+                        if fps <= 30:
+                            return int(round(fps)) if fps >= 1 else 30
+                        return 30
+        except Exception:
+            pass
+    return 30
+
+
 def transcode_one(
     input_path: str,
     output_path: str,
@@ -97,14 +131,18 @@ def transcode_one(
     height: int,
     bitrate_k: int,
     abitrate: str,
+    fps: int = 30,
 ):
-    """Single rendition with aligned GOP for JIT HLS (phase 4 spec)."""
-    # Common aligned params: -r 30 -g 60 -keyint_min 60 -sc_threshold 0 -force_key_frames expr:gte(t,n_forced*2)
-    # + high profile, faststart for mp4
+    """Single rendition with aligned GOP for JIT HLS (phase 4 spec, Phase 10 limits)."""
     vf = f"scale=-2:{height}:flags=lanczos"
+    # Phase 10: limit threads and preset to avoid OOM/CPU starvation on large files
+    preset = FFMPEG_PRESET if FFMPEG_PRESET in ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow") else "veryfast"
+    threads = FFMPEG_THREADS if FFMPEG_THREADS.isdigit() and 1 <= int(FFMPEG_THREADS) <= 8 else "2"
     cmd = [
         "ffmpeg",
         "-y",
+        "-threads",
+        threads,
         "-i",
         input_path,
         "-c:v",
@@ -113,12 +151,14 @@ def transcode_one(
         "high",
         "-pix_fmt",
         "yuv420p",
+        "-preset",
+        preset,
         "-r",
-        "30",
+        str(fps),
         "-g",
-        "60",
+        str(fps * 2),
         "-keyint_min",
-        "60",
+        str(fps * 2),
         "-sc_threshold",
         "0",
         "-force_key_frames",
@@ -128,7 +168,7 @@ def transcode_one(
         "-b:v",
         f"{bitrate_k}k",
         "-maxrate",
-        f"{int(bitrate_k * 1.07)}k",
+        f"{int(bitrate_k * 1.10)}k",
         "-bufsize",
         f"{bitrate_k * 2}k",
         "-c:a",
@@ -139,8 +179,8 @@ def transcode_one(
         "+faststart",
         output_path,
     ]
-    log.info("ffmpeg %dx%d %dk: %s", width, height, bitrate_k, " ".join(cmd))
-    subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+    log.info("ffmpeg %dx%d %dk %dfps threads=%s preset=%s: %s", width, height, bitrate_k, fps, threads, preset, " ".join(cmd))
+    subprocess.run(cmd, check=True, capture_output=True, timeout=900)
 
 
 def transcode_thumbnail(input_path: str, output_path: str):
@@ -185,46 +225,38 @@ def process_message(body: bytes):
         mc.stat_object(BUCKET, s3_key)
 
         with tempfile.TemporaryDirectory() as tmp:
+            # Phase 10: disk check before download (avoid filling /tmp on large files)
+            try:
+                free = shutil.disk_usage(tmp).free
+                # need at least 2× raw size free (raw + renditions); conservative 500MB min
+                if free < 500 * 1024 * 1024:
+                    log.error("low disk space in %s: free=%d bytes, aborting %s", tmp, free, video_id)
+                    raise RuntimeError(f"low disk space: {free} bytes free")
+            except Exception as e:
+                if "low disk space" in str(e):
+                    raise
+                log.warning("disk_usage check failed: %s", e)
+
             raw_path = os.path.join(tmp, "original.mp4")
             log.info("downloading s3://%s/%s -> %s", BUCKET, s3_key, raw_path)
-            # fget_object is preferred over copy for local ffmpeg input
             try:
                 mc.fget_object(BUCKET, s3_key, raw_path)
             except AttributeError:
-                # fallback for fake/mocked clients without fget_object (tests)
                 log.warning("fget_object not available, falling back to copy test stub")
                 raise
 
-            _ = probe_video(raw_path)
+            probe = probe_video(raw_path)
+            fps = _fps_from_probe(probe)
 
             # prepare output paths
             outputs: dict[str, str] = {}
             for q, w, h, br, abr in RENDITIONS_SPEC:
                 outputs[q] = os.path.join(tmp, f"{q}.mp4")
 
-            # 3× ffmpeg in parallel (I/O bound + CPU, ThreadPool is enough; CPU-heavy but keeps simplicity)
-            errors: list[Exception] = []
-
-            def _run(spec):
-                q, w, h, br, abr = spec
-                try:
-                    transcode_one(raw_path, outputs[q], w, h, br, abr)
-                except Exception as e:
-                    log.error("transcode %s failed: %s", q, e)
-                    errors.append(e)
-                    raise
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-                futs = [ex.submit(_run, spec) for spec in RENDITIONS_SPEC]
-                # wait and collect errors
-                for f in concurrent.futures.as_completed(futs):
-                    try:
-                        f.result()
-                    except Exception:
-                        pass
-
-            if errors:
-                raise errors[0]
+            # Phase 10: sequential transcode to limit CPU/RAM (3× parallel caused OOM)
+            for q, w, h, br, abr in RENDITIONS_SPEC:
+                log.info("transcoding %s sequentially (fps=%d)", q, fps)
+                transcode_one(raw_path, outputs[q], w, h, br, abr, fps=fps)
 
             # thumbnail (non-blocking for ready, but upload if exists)
             thumb_key: str | None = None
@@ -258,9 +290,20 @@ def process_message(body: bytes):
     update_status(video_id, "ready", renditions, thumb_key)
 
 
+_shutdown = False
+
+
+def _handle_sigterm(signum, frame):
+    global _shutdown
+    log.info("received signal %s, graceful shutdown", signum)
+    _shutdown = True
+
+
 def main():
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    signal.signal(signal.SIGINT, _handle_sigterm)
     params = pika.URLParameters(RABBITMQ_URL)
-    while True:
+    while not _shutdown:
         try:
             conn = pika.BlockingConnection(params)
             channel = conn.channel()
@@ -276,14 +319,20 @@ def main():
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
             channel.basic_consume(queue=QUEUE, on_message_callback=on_message)
-            log.info("consumer ready, waiting for %s", QUEUE)
+            log.info("consumer ready, waiting for %s (threads=%s preset=%s)", QUEUE, FFMPEG_THREADS, FFMPEG_PRESET)
             channel.start_consuming()
         except AMQPConnectionError as e:
+            if _shutdown:
+                break
             log.error("rabbitmq connection failed: %s, retry in 5s", e)
             time.sleep(5)
         except KeyboardInterrupt:
             break
+        except SystemExit:
+            break
         except Exception as e:
+            if _shutdown:
+                break
             log.exception("consumer error: %s", e)
             time.sleep(5)
 
