@@ -170,7 +170,12 @@ def transcode_one(
     """Single rendition with aligned GOP for JIT HLS (phase 4 spec, Phase 10 limits)."""
     vf = f"scale=-2:{height}:flags=lanczos"
     # Phase 10: limit threads and preset to avoid OOM/CPU starvation on large files
-    preset = FFMPEG_PRESET if FFMPEG_PRESET in ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow") else "veryfast"
+    preset = (
+        FFMPEG_PRESET
+        if FFMPEG_PRESET
+        in ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow")
+        else "veryfast"
+    )
     threads = FFMPEG_THREADS if FFMPEG_THREADS.isdigit() and 1 <= int(FFMPEG_THREADS) <= 8 else "2"
     cmd = ["ffmpeg", "-y", "-threads", threads, "-i", input_path]
     if audio_path:
@@ -208,7 +213,16 @@ def transcode_one(
     if audio_path:
         cmd += ["-c:a", "copy"]
     cmd += ["-movflags", "+faststart", output_path]
-    log.info("ffmpeg %dx%d %dk %dfps threads=%s preset=%s: %s", width, height, bitrate_k, fps, threads, preset, " ".join(cmd))
+    log.info(
+        "ffmpeg %dx%d %dk %dfps threads=%s preset=%s: %s",
+        width,
+        height,
+        bitrate_k,
+        fps,
+        threads,
+        preset,
+        " ".join(cmd),
+    )
     subprocess.run(cmd, check=True, capture_output=True, timeout=900)
 
 
@@ -264,7 +278,9 @@ def process_message(body: bytes):
                 free = shutil.disk_usage(tmp).free
                 # need at least 2× raw size free (raw + renditions); conservative 500MB min
                 if free < 500 * 1024 * 1024:
-                    log.error("low disk space in %s: free=%d bytes, aborting %s", tmp, free, video_id)
+                    log.error(
+                        "low disk space in %s: free=%d bytes, aborting %s", tmp, free, video_id
+                    )
                     raise RuntimeError(f"low disk space: {free} bytes free")
             except Exception as e:
                 if "low disk space" in str(e):
@@ -382,7 +398,12 @@ def main():
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
             channel.basic_consume(queue=QUEUE, on_message_callback=on_message)
-            log.info("consumer ready, waiting for %s (threads=%s preset=%s)", QUEUE, FFMPEG_THREADS, FFMPEG_PRESET)
+            log.info(
+                "consumer ready, waiting for %s (threads=%s preset=%s)",
+                QUEUE,
+                FFMPEG_THREADS,
+                FFMPEG_PRESET,
+            )
             channel.start_consuming()
         except AMQPConnectionError as e:
             if _shutdown:
