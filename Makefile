@@ -3,7 +3,7 @@
 # .env — единственный в корне, compose явно указывает на него (--env-file), deploy/.env не нужен
 COMPOSE=docker compose --env-file .env -f deploy/docker-compose.yml
 
-.PHONY: up down logs ps build lint fmt test e2e swagger swagger-install sync-py migrate-up migrate-down migrate-create migrate-alembic-up
+.PHONY: up down logs ps build lint fmt test e2e e2e-file swagger swagger-install sync-py migrate-up migrate-down migrate-create migrate-alembic-up
 
 up:
 	$(COMPOSE) up --build -d
@@ -106,7 +106,11 @@ fmt-front:
 	cd frontend && npm run format || npx prettier --write .
 
 e2e:
-	bash scripts/e2e.sh
+	POLL_TIMEOUT="$(POLL_TIMEOUT)" SAMPLE="$(SAMPLE)" bash scripts/e2e.sh
+
+e2e-file:
+	@test -n "$(FILE)" || (echo "usage: make e2e-file FILE=path/to/video.mp4" && exit 1)
+	POLL_TIMEOUT="$(POLL_TIMEOUT)" SAMPLE="$(FILE)" bash scripts/e2e.sh
 
 # Migrations — single source of truth: deploy/migrations (golang-migrate)
 # Prod: `migrate` service in docker-compose.yml runs `up` automatically.

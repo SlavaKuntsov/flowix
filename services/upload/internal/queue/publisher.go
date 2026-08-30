@@ -126,6 +126,12 @@ func declareTopology(ch *amqp.Channel, queue string) error {
 		// Caller must purge the old queue (rabbitmqadmin delete queue) before redeploy.
 		return fmt.Errorf("queue declare: %w", err)
 	}
+	// Phase 12: fan-out per-rendition queues for parallel workers (prefetch 1 each)
+	for _, fq := range []string{"video.transcode.360p", "video.transcode.720p", "video.transcode.1080p"} {
+		if _, err := ch.QueueDeclare(fq, true, false, false, false, mainArgs); err != nil {
+			return fmt.Errorf("fanout queue declare %s: %w", fq, err)
+		}
+	}
 	return nil
 }
 

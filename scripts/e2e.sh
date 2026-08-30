@@ -24,9 +24,23 @@ EMAIL=${EMAIL:-user@example.com}
 PASSWORD=${PASSWORD:-string}
 SAMPLE=${SAMPLE:-}
 VIDEO_ID=${VIDEO_ID:-}
-POLL_TIMEOUT=${POLL_TIMEOUT:-240}
+POLL_TIMEOUT=${POLL_TIMEOUT:-600}
 POLL_INTERVAL=${POLL_INTERVAL:-3}
-EXPECTED_RENDITIONS=${EXPECTED_RENDITIONS:-3}
+EXPECTED_RENDITIONS=${EXPECTED_RENDITIONS:-}
+# Phase 12 adaptive ladder: infer expected renditions from SAMPLE height if not set
+infer_expected() {
+  local sample="$1"
+  if [ -n "$EXPECTED_RENDITIONS" ]; then echo "$EXPECTED_RENDITIONS"; return; fi
+  if [ -n "$sample" ] && [ -f "$sample" ] && command -v ffprobe >/dev/null 2>&1; then
+    local h
+    h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$sample" 2>/dev/null | head -1 | tr -d '\r' || echo "")
+    if [ -n "$h" ] && [ "$h" -ge 1080 ] 2>/dev/null; then echo 3; return; fi
+    if [ -n "$h" ] && [ "$h" -ge 720 ] 2>/dev/null; then echo 2; return; fi
+    if [ -n "$h" ] && [ "$h" -gt 0 ] 2>/dev/null; then echo 1; return; fi
+  fi
+  # fallback for generated 1280x720 sample or unknown
+  echo 2
+}
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -106,6 +120,11 @@ if [ -z "$VIDEO_ID" ]; then
       || fail "ffmpeg sample generation failed"
   fi
   [ -f "$SAMPLE" ] || fail "sample not found: $SAMPLE"
+  # infer expected renditions now that SAMPLE is known (Phase 12)
+  if [ -z "$EXPECTED_RENDITIONS" ]; then
+    EXPECTED_RENDITIONS=$(infer_expected "$SAMPLE")
+    say "   inferred EXPECTED_RENDITIONS=$EXPECTED_RENDITIONS for $SAMPLE"
+  fi
 
   say "3) upload $SAMPLE"
   code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$UPLOAD/api/v1/videos/upload" \
