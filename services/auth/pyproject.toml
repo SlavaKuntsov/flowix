@@ -17,6 +17,7 @@ dependencies = [
   "pydantic-settings>=2.6,<3",
   "python-multipart>=0.0.9",
   "httpx>=0.27,<0.28",
+  "prometheus_client>=0.21",
 ]
 
 [dependency-groups]

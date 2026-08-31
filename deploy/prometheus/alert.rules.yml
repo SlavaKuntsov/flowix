@@ -1,0 +1,25 @@
+groups:
+  - name: flowix
+    interval: 30s
+    rules:
+      - alert: QueueDepthHigh
+        expr: rabbitmq_queue_messages > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ queue depth >100"
+      - alert: TranscoderOOM
+        expr: increase(container_memory_failures_total{name=~"transcoder.*"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Transcoder OOM detected"
+      - alert: MinIODiskHigh
+        expr: (minio_cluster_capacity_usable_free_bytes / minio_cluster_capacity_usable_total_bytes) < 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MinIO disk >80% used"

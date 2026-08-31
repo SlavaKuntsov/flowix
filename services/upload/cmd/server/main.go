@@ -13,16 +13,19 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	_ "flowix/upload/docs"
 	"flowix/upload/internal/client"
 	"flowix/upload/internal/handler"
+	"flowix/upload/internal/metrics"
 	mw "flowix/upload/internal/middleware"
 	"flowix/upload/internal/queue"
 	"flowix/upload/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rs/zerolog"
+	zlog "github.com/rs/zerolog/log"
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
@@ -55,7 +58,17 @@ func main() {
 	minioSecret := os.Getenv("MINIO_SECRET_KEY")
 
 	secure, _ := strconv.ParseBool(os.Getenv("MINIO_SECURE"))
-
+	if strings.ToLower(os.Getenv("LOG_FORMAT")) == "console" || os.Getenv("ENV") == "dev" {
+		zlog.Logger = zlog.Output(zerolog.ConsoleWriter{Out: os.Stdout})
+	} else {
+		zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	}
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {
+		if l, err := zerolog.ParseLevel(lvl); err == nil {
+			zerolog.SetGlobalLevel(l)
+		}
+	}
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
 	store, err := storage.NewMinioClient(minioEndpoint, minioAccess, minioSecret, bucket, secure)
@@ -73,12 +86,13 @@ func main() {
 	ph := handler.NewPresignHandler(store, pub, metaCl)
 
 	r := chi.NewRouter()
-	r.Use(middleware.Logger, middleware.Recoverer, middleware.RequestID)
+	r.Use(middleware.RequestID, middleware.Recoverer, mw.RequestLogger)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok","service":"upload"}`))
 	})
+	r.Get("/metrics", metrics.Handler().ServeHTTP)
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
 	r.Get("/openapi.json", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/swagger/doc.json", http.StatusMovedPermanently)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"flowix/upload/internal/metrics"
 	mw "flowix/upload/internal/middleware"
 	"github.com/go-chi/chi/v5"
 )
@@ -143,6 +144,7 @@ func (h *PresignHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"object not found, upload via presigned URL first"}`, 404)
 		return
 	}
+	metrics.UploadBytes.Inc()
 	ev := VideoUploadedEvent{VideoID: videoID, S3Key: s3Key, OwnerID: ownerID}
 	if err := h.publisher.Publish(r.Context(), ev); err != nil {
 		http.Error(w, `{"error":"queue: `+err.Error()+`"}`, 500)

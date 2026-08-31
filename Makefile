@@ -3,11 +3,11 @@
 # .env — единственный в корне, compose явно указывает на него (--env-file), deploy/.env не нужен
 COMPOSE=docker compose --env-file .env -f deploy/docker-compose.yml
 
-.PHONY: up down logs ps build lint fmt test e2e e2e-file swagger swagger-install sync-py migrate-up migrate-down migrate-create migrate-alembic-up
+.PHONY: up down logs ps build lint fmt test e2e e2e-file swagger swagger-install sync-py migrate-up migrate-down migrate-create migrate-alembic-up metrics loki-logs grafana prometheus
 
 up:
 	$(COMPOSE) up --build -d
-	@echo "infra: postgres :5432, minio :9000/:9001, rabbit :5672/:15672, nginx-vod :8081, gateway :8080"
+	@echo "infra: postgres :5432, minio :9000/:9001, rabbit :5672/:15672, nginx-vod :8081, gateway :8080, prometheus :9090, grafana :3001, loki :3100, transcoder :8004/metrics"
 
 up-frontend:
 	$(COMPOSE) up --build -d frontend
@@ -20,6 +20,22 @@ logs:
 
 ps:
 	$(COMPOSE) ps
+
+# Observability (фаза 14) — Prometheus/Grafana/Loki
+metrics:
+	curl -s http://localhost:9090/api/v1/query?query=up | jq 2>/dev/null | head -n 50 || curl -s http://localhost:9090/api/v1/query?query=up | head -n 50
+	@echo "--- gateway/metrics ---"
+	curl -s http://localhost:8080/metrics | grep -E 'rabbitmq_queue_depth|upload_bytes|vod_cache_hit|ffmpeg_duration' | head -n 20 || true
+	curl -s http://localhost:3100/ready 2>/dev/null && echo "loki ready" || echo "loki not ready (http://localhost:3100/ready)"
+
+loki-logs:
+	curl -G -s "http://localhost:3100/loki/api/v1/query" --data-urlencode 'query={service="gateway"}' 2>/dev/null | jq 2>/dev/null | head -n 100 || curl -G -s "http://localhost:3100/loki/api/v1/query" --data-urlencode 'query={service="gateway"}' | head -n 100
+
+grafana:
+	open http://localhost:3001/d/flowix-overview 2>/dev/null || xdg-open http://localhost:3001/d/flowix-overview 2>/dev/null || echo "open http://localhost:3001/d/flowix-overview (admin/admin)"
+
+prometheus:
+	open http://localhost:9090/targets 2>/dev/null || xdg-open http://localhost:9090/targets 2>/dev/null || echo "open http://localhost:9090/targets"
 
 build:
 	$(COMPOSE) build
