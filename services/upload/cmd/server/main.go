@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	_ "flowix/upload/docs"
 	"flowix/upload/internal/client"
@@ -24,6 +25,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rs/zerolog"
+	zlog "github.com/rs/zerolog/log"
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
@@ -56,7 +58,17 @@ func main() {
 	minioSecret := os.Getenv("MINIO_SECRET_KEY")
 
 	secure, _ := strconv.ParseBool(os.Getenv("MINIO_SECURE"))
-
+	if strings.ToLower(os.Getenv("LOG_FORMAT")) == "console" || os.Getenv("ENV") == "dev" {
+		zlog.Logger = zlog.Output(zerolog.ConsoleWriter{Out: os.Stdout})
+	} else {
+		zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	}
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {
+		if l, err := zerolog.ParseLevel(lvl); err == nil {
+			zerolog.SetGlobalLevel(l)
+		}
+	}
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
 	store, err := storage.NewMinioClient(minioEndpoint, minioAccess, minioSecret, bucket, secure)

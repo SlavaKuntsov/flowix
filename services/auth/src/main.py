@@ -1,7 +1,21 @@
+import json
+import logging
+import sys
+import time
+import uuid
+
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
 from .routers.auth import router
+
+# Unified JSON logging with trace_id (Phase 14)
+_auth_logger = logging.getLogger("auth")
+if not _auth_logger.handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setFormatter(logging.Formatter("%(message)s"))
+    _auth_logger.addHandler(_h)
+_auth_logger.setLevel(logging.INFO)
 
 try:
     from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -20,6 +34,39 @@ app = FastAPI(title="flowix-auth", version="0.1.0")
 # Access-Control-Allow-Origin headers (gateway sets origin, upstream must not).
 # Auth is behind gateway; direct :8001 access is internal/Swagger only.
 app.include_router(router)
+
+
+@app.middleware("http")
+async def trace_middleware(request: Request, call_next):
+    trace_id = (
+        request.headers.get("x-request-id")
+        or request.headers.get("X-Request-ID")
+        or str(uuid.uuid4())
+    )
+    request.state.trace_id = trace_id
+    start = time.time()
+    response = await call_next(request)
+    duration = time.time() - start
+    level = (
+        "info" if response.status_code < 400 else "warn" if response.status_code < 500 else "error"
+    )
+    log_data = {
+        "level": level,
+        "msg": "request",
+        "service": "auth",
+        "method": request.method,
+        "path": request.url.path,
+        "status": response.status_code,
+        "duration": duration,
+        "trace_id": trace_id,
+        "request_id": trace_id,
+    }
+    try:
+        _auth_logger.info(json.dumps(log_data))
+    except Exception:
+        pass
+    response.headers["X-Request-ID"] = trace_id
+    return response
 
 
 @app.get("/health")
