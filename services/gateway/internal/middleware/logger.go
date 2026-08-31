@@ -23,12 +23,19 @@ func RequestLogger(next http.Handler) http.Handler {
 		} else if ww.status >= 400 {
 			ev = log.Warn()
 		}
+		reqID := r.Header.Get("X-Request-ID")
+		if reqID == "" {
+			reqID = r.Header.Get("X-Request-Id")
+		}
 		ev.Str("method", r.Method).
 			Str("path", r.URL.Path).
 			Int("status", ww.status).
 			Dur("duration", dur).
 			Str("ip", clientIP(r)).
-			Str("req_id", r.Header.Get("X-Request-ID")).
+			Str("req_id", reqID).
+			Str("trace_id", reqID).
+			Str("request_id", reqID).
+			Str("service", "gateway").
 			Msg("request")
 		// также zerolog global logger доступен как zerolog.Ctx
 		_ = zerolog.Ctx(r.Context())
