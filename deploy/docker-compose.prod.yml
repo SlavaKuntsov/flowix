@@ -5,6 +5,7 @@ services:
     environment:
       TZ: UTC
       ENV: prod
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
     volumes:
       - ./nginx/nginx.prod.conf:/etc/nginx/nginx.prod.conf.template:ro
 
