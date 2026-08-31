@@ -36,10 +36,36 @@ export default function VideoPlayer({ src, poster }: { src: string; poster?: str
       return;
     }
 
+    // Extract token from src for private HLS (phase 13) and forward via header for segment fetches
+    let hlsToken: string | null = null;
+    try {
+      const u = new URL(src, typeof window !== "undefined" ? window.location.origin : "http://localhost");
+      hlsToken = u.searchParams.get("token");
+    } catch {}
     const hls = new Hls({
       enableWorker: true,
       lowLatencyMode: false,
-    });
+      xhrSetup: (xhr: XMLHttpRequest, url: string) => {
+        // Attach Authorization for private videos so gateway can verify owner without token param
+        const access = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+        if (access && !url.includes("token=")) {
+          xhr.setRequestHeader("Authorization", `Bearer ${access}`);
+        }
+        // If master url had token, propagate to segment requests
+        if (hlsToken && !url.includes("token=")) {
+          const sep = url.includes("?") ? "&" : "?";
+          // xhr URL cannot be rewritten here directly, but we can set header fallback
+          // Instead we override by opening new url — hls.js allows xhr.open override via url param mutation before send
+          // Workaround: if token present, add as header alternative (gateway checks query OR header)
+          // Gateway HLSAuth checks ?token= and Authorization, so header is sufficient.
+          if (access) {
+            // already set
+          } else {
+            xhr.setRequestHeader("X-HLS-Token", hlsToken);
+          }
+        }
+      },
+    } as any);
     hlsRef.current = hls;
     hls.loadSource(src);
     hls.attachMedia(video);

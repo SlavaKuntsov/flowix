@@ -12,14 +12,19 @@ function hlsBase(): string {
   return process.env.GATEWAY_URL?.replace(/\/$/, "") || API_BASE || "http://localhost:8080";
 }
 
-export function getHlsUrl(videoId: string): string {
+export function getHlsUrl(videoId: string, token?: string): string {
   const b = hlsBase();
-  // nginx-vod mapped mode serves HLS at /hls/{id}/master.m3u8 (with trailing structure)
-  // Actual nginx-vod config: location ~ "^/hls/[0-9a-fA-F-]{36}/" with vod hls; expects /hls/{id}/master.m3u8
-  return `${b}/hls/${videoId}/master.m3u8`;
+  const base = `${b}/hls/${videoId}/master.m3u8`;
+  if (token) return `${base}?token=${encodeURIComponent(token)}`;
+  return base;
+}
+
+export async function getHlsToken(videoId: string): Promise<{ token: string; expires_in: number; url: string }> {
+  return request<{ token: string; expires_in: number; url: string }>(`/api/v1/videos/${videoId}/hls-token`);
 }
 
 export type VideoStatus = "uploaded" | "processing" | "ready" | "failed";
+export type Visibility = "public" | "private" | "unlisted";
 export interface Rendition {
   video_id: string;
   quality: string;
@@ -36,6 +41,7 @@ export interface Video {
   description: string;
   duration?: number | null;
   status: VideoStatus;
+  visibility?: Visibility;
   thumbnail_s3_key?: string | null;
   thumbnail_url?: string | null;
   created_at: string;
@@ -121,6 +127,10 @@ export async function createVideoMeta(title: string, description: string): Promi
 }
 export async function deleteVideo(id: string): Promise<void> {
   return request<void>(`/api/v1/videos/${id}`, { method: "DELETE" });
+}
+
+export async function updateVideo(id: string, data: { title?: string; description?: string; visibility?: Visibility }): Promise<Video> {
+  return request<Video>(`/api/v1/videos/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
 }
 
 // Presigned upload: direct PUT to MinIO (Phase 11) — gateway only creates presign, file bypasses Go proxy
