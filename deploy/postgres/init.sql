@@ -8,6 +8,11 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
 
+DO $$ BEGIN
+  CREATE TYPE video_visibility AS ENUM ('public','private','unlisted');
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
 CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email TEXT UNIQUE NOT NULL,
@@ -23,10 +28,12 @@ CREATE TABLE IF NOT EXISTS videos (
   duration INT,
   status video_status NOT NULL DEFAULT 'uploaded',
   thumbnail_s3_key TEXT,
+  visibility video_visibility NOT NULL DEFAULT 'public',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- thumbnail for VideoCard preview (added Phase 7 fix)
 ALTER TABLE videos ADD COLUMN IF NOT EXISTS thumbnail_s3_key TEXT;
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS visibility video_visibility NOT NULL DEFAULT 'public';
 
 CREATE TABLE IF NOT EXISTS video_renditions (
   video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -41,3 +48,4 @@ CREATE TABLE IF NOT EXISTS video_renditions (
 CREATE INDEX IF NOT EXISTS idx_videos_owner ON videos(owner_id);
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 CREATE INDEX IF NOT EXISTS idx_videos_created ON videos(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_videos_visibility ON videos(visibility);

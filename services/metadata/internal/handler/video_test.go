@@ -30,7 +30,7 @@ type fakeStore struct {
 func newFake() *fakeStore { return &fakeStore{videos: map[string]*model.Video{}} }
 
 func (f *fakeStore) Create(_ context.Context, ownerID, title, description string) (*model.Video, error) {
-	v := &model.Video{ID: "vid-" + title, OwnerID: ownerID, Title: title, Description: description, Status: model.StatusUploaded}
+	v := &model.Video{ID: "vid-" + title, OwnerID: ownerID, Title: title, Description: description, Status: model.StatusUploaded, Visibility: model.VisibilityPublic}
 	f.videos[v.ID] = v
 	return v, nil
 }
@@ -69,6 +69,12 @@ func (f *fakeStore) Update(_ context.Context, id, ownerID string, req model.Upda
 	}
 	if req.Description != nil {
 		v.Description = *req.Description
+	}
+	if req.Visibility != nil {
+		if !req.Visibility.Valid() {
+			return nil, &fakeErr{"invalid visibility"}
+		}
+		v.Visibility = *req.Visibility
 	}
 	return v, nil
 }
