@@ -1,0 +1,45 @@
+{
+  "title": "Flowix — Overview",
+  "uid": "flowix-overview",
+  "tags": ["flowix"],
+  "timezone": "browser",
+  "schemaVersion": 30,
+  "version": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "RabbitMQ queue depth",
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "rabbitmq_queue_depth", "instant": true }],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 }
+    },
+    {
+      "type": "graph",
+      "title": "FFmpeg duration (histogram count)",
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "sum by (quality) (increase(ffmpeg_duration_seconds_count[5m]))", "legendFormat": "{{quality}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 6, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Upload bytes (total)",
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "sum(upload_bytes)", "instant": true }],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "VOD cache hits (total)",
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "sum(vod_cache_hit)", "instant": true }],
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 4 }
+    },
+    {
+      "type": "graph",
+      "title": "HTTP requests by service (from metrics if available)",
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "sum by (job) (rate(http_requests_total[5m]))", "legendFormat": "{{job}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    }
+  ]
+}
