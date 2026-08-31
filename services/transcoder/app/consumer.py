@@ -12,6 +12,23 @@ from pika.exceptions import AMQPConnectionError  # type: ignore[import-untyped]
 import requests
 from minio import Minio
 
+try:
+    from prometheus_client import Counter, Gauge, Histogram, start_http_server
+
+    ffmpeg_duration_metric = Histogram(
+        "ffmpeg_duration_seconds", "FFmpeg transcoding duration", ["quality"]
+    )
+    rabbitmq_queue_depth_metric = Gauge("rabbitmq_queue_depth", "RabbitMQ queue depth")
+    upload_bytes_metric = Counter("upload_bytes", "Total uploaded bytes")
+    vod_cache_hit_metric = Counter("vod_cache_hit", "VOD cache hits")
+    METRICS_AVAILABLE = True
+except ImportError:
+    ffmpeg_duration_metric = None  # type: ignore
+    rabbitmq_queue_depth_metric = None  # type: ignore
+    upload_bytes_metric = None  # type: ignore
+    vod_cache_hit_metric = None  # type: ignore
+    METRICS_AVAILABLE = False
+
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -401,7 +418,13 @@ def transcode_one(
         ENCODE_MODE,
         " ".join(cmd),
     )
+    start = time.time()
     subprocess.run(cmd, check=True, capture_output=True, timeout=900)
+    if METRICS_AVAILABLE and ffmpeg_duration_metric is not None:
+        try:
+            ffmpeg_duration_metric.labels(quality=f"{height}p").observe(time.time() - start)
+        except Exception:
+            pass
 
 
 def transcode_one_pipe(
@@ -486,6 +509,7 @@ def transcode_one_pipe(
         cmd += ["-c:a", "copy"]
     cmd += ["-movflags", "+faststart", output_path]
     log.info("ffmpeg pipe %dx%d %dk enc=%s: %s", width, height, bitrate_k, enc, " ".join(cmd))
+    start = time.time()
     proc = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
@@ -515,6 +539,11 @@ def transcode_one_pipe(
                 proc.stdin.write(chunk)
             proc.stdin.close()
         stdout, stderr = proc.communicate(timeout=900)
+        if METRICS_AVAILABLE and ffmpeg_duration_metric is not None:
+            try:
+                ffmpeg_duration_metric.labels(quality=f"{height}p").observe(time.time() - start)
+            except Exception:
+                pass
         if proc.returncode != 0:
             raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
     finally:
@@ -825,6 +854,13 @@ def _get_status(video_id: str) -> str | None:
 def main():
     signal.signal(signal.SIGTERM, _handle_sigterm)
     signal.signal(signal.SIGINT, _handle_sigterm)
+    if METRICS_AVAILABLE:
+        try:
+            mp = int(os.getenv("METRICS_PORT", "8004"))
+            start_http_server(mp)
+            log.info("metrics server started on :%d", mp)
+        except Exception as e:
+            log.warning("metrics server failed: %s", e)
     params = pika.URLParameters(RABBITMQ_URL)
     # Phase 10 fix: long transcoding (2GB ~5min) blocks heartbeat thread → broker closes connection (104).
     # Default heartbeat 60s is too short; set to 600s (10min) to cover 5-6GB files. For larger files Phase 11 will use chunked.

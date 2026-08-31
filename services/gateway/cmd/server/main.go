@@ -15,6 +15,7 @@ import (
 
 	"flowix/gateway/internal/handler"
 	gwmw "flowix/gateway/internal/middleware"
+	"flowix/gateway/internal/metrics"
 	"flowix/gateway/internal/proxy"
 )
 
@@ -81,6 +82,7 @@ func main() {
 	// health — без прокси, без rate-limit (rate-limit уже пропускает /health)
 	r.Get("/health", healthHandler)
 	r.Get("/healthz", healthHandler)
+	r.Get("/metrics", metrics.Handler().ServeHTTP)
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"service": "gateway", "status": "ok"})
 	})
@@ -133,7 +135,7 @@ func main() {
 
 	// --- HLS / VOD: защищён HLSAuth (private 403 без токена, public пропуск) ---
 	hlsAuth := gwmw.HLSAuth(jwtSecret, internalToken, metadataURL)
-	r.With(hlsAuth).Handle("/hls/*", vodProxy)
+	r.With(hlsAuth, metrics.Middleware).Handle("/hls/*", vodProxy)
 
 	// --- Thumbnails / public MinIO objects via gateway (avoid direct :9000 CORS) ---
 	// frontend uses /thumbnails/{id}/thumb.jpg ; gateway proxies to MinIO bucket `videos`

@@ -17,6 +17,7 @@ import (
 	_ "flowix/upload/docs"
 	"flowix/upload/internal/client"
 	"flowix/upload/internal/handler"
+	"flowix/upload/internal/metrics"
 	mw "flowix/upload/internal/middleware"
 	"flowix/upload/internal/queue"
 	"flowix/upload/internal/storage"
@@ -79,6 +80,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok","service":"upload"}`))
 	})
+	r.Get("/metrics", metrics.Handler().ServeHTTP)
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
 	r.Get("/openapi.json", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/swagger/doc.json", http.StatusMovedPermanently)

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"flowix/upload/internal/metrics"
 	mw "flowix/upload/internal/middleware"
 )
 
@@ -131,6 +132,9 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if header.Size > 0 {
+		metrics.UploadBytes.Add(float64(header.Size))
+	}
 	// 3. publish event
 	ev := VideoUploadedEvent{VideoID: videoID, S3Key: s3Key, OwnerID: ownerID}
 	if err := h.publisher.Publish(r.Context(), ev); err != nil {

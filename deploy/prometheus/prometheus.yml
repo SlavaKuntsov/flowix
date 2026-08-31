@@ -27,6 +27,11 @@ scrape_configs:
       - targets: ['auth:8001']
     metrics_path: /metrics
 
+  - job_name: 'transcoder'
+    static_configs:
+      - targets: ['transcoder:8004']
+    metrics_path: /metrics
+
   - job_name: 'rabbitmq'
     static_configs:
       - targets: ['rabbitmq:15672']

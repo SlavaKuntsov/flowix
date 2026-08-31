@@ -198,6 +198,9 @@ services:
       ENCODE_MODE: ${ENCODE_MODE:-cbr}
       FFMPEG_HWACCEL: ${FFMPEG_HWACCEL:-auto}
       TRANSCODER_PIPE_INPUT: ${TRANSCODER_PIPE_INPUT:-true}
+      METRICS_PORT: ${TRANSCODER_METRICS_PORT:-8004}
+    ports:
+      - "${TRANSCODER_METRICS_PORT:-8004}:8004"
     depends_on:
       rabbitmq:
         condition: service_healthy
