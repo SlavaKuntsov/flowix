@@ -85,7 +85,7 @@ func main() {
 	}
 
 	r := chi.NewRouter()
-	r.Use(middleware.Logger, middleware.Recoverer, middleware.RequestID)
+	r.Use(middleware.RequestID, middleware.Recoverer, mw.RequestLogger)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, r, http.StatusOK, map[string]string{"status": "ok", "service": "metadata"})

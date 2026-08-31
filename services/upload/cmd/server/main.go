@@ -73,7 +73,7 @@ func main() {
 	ph := handler.NewPresignHandler(store, pub, metaCl)
 
 	r := chi.NewRouter()
-	r.Use(middleware.Logger, middleware.Recoverer, middleware.RequestID)
+	r.Use(middleware.RequestID, middleware.Recoverer, mw.RequestLogger)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

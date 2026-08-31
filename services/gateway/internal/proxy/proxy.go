@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -21,9 +22,30 @@ func New(target *url.URL) *httputil.ReverseProxy {
 		// Сохраняем оригинальный Host заголовок клиента в X-Forwarded-Host,
 		// а Host выставляем на upstream (важно для nginx-vod Host header).
 		r.Header.Set("X-Forwarded-Host", r.Host)
-		// Пробрасываем X-Forwarded-For корректно
-		// (net/http уже делает, но на всякий — добавляем RemoteAddr)
-		// Не трогаем Authorization / X-User-ID — их ставит Auth middleware
+		// Прокидываем X-Request-ID (chi middleware.RequestID) во все апстримы для трассировки
+		if v := r.Header.Get("X-Request-Id"); v != "" {
+			r.Header.Set("X-Request-ID", v)
+		}
+		if v := r.Header.Get("X-Request-ID"); v != "" {
+			// keep as is, ensure downstream sees it
+			r.Header.Set("X-Request-ID", v)
+		}
+		// X-User-ID уже ставит AuthMiddleware — не трогаем, просто прокидываем если есть
+		// X-Forwarded-For: добавляем client IP (gateway — единственная точка входа, поэтому формируем цепочку)
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		if host != "" {
+			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+				// не дублируем если уже содержит host
+				if !strings.Contains(xff, host) {
+					r.Header.Set("X-Forwarded-For", xff+", "+host)
+				}
+			} else {
+				r.Header.Set("X-Forwarded-For", host)
+			}
+		}
 		// Заголовок X-Forwarded-Proto
 		if r.TLS != nil {
 			r.Header.Set("X-Forwarded-Proto", "https")
