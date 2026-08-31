@@ -87,6 +87,15 @@ func (h *VideoHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "internal error")
 		return
 	}
+	if req.Visibility != nil {
+		if !req.Visibility.Valid() {
+			writeError(w, r, http.StatusBadRequest, "invalid visibility")
+			return
+		}
+		if upd, err := h.repo.Update(r.Context(), v.ID, ownerID, model.UpdateVideoRequest{Visibility: req.Visibility}); err == nil {
+			v = upd
+		}
+	}
 	writeJSON(w, r, http.StatusCreated, v)
 }
 
@@ -202,10 +211,18 @@ func (h *VideoHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid body")
 		return
 	}
+	if req.Visibility != nil && !req.Visibility.Valid() {
+		writeError(w, r, http.StatusBadRequest, "invalid visibility")
+		return
+	}
 	v, err := h.repo.Update(r.Context(), id, ownerID, req)
 	if err != nil {
 		if err.Error() == "forbidden" {
 			writeError(w, r, http.StatusForbidden, "forbidden")
+			return
+		}
+		if err.Error() == "invalid visibility" {
+			writeError(w, r, http.StatusBadRequest, "invalid visibility")
 			return
 		}
 		writeError(w, r, http.StatusNotFound, "not found")

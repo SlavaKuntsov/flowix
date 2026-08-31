@@ -116,6 +116,9 @@ func main() {
 	r.With(authMw).Post("/api/v1/videos/complete", uploadProxy.ServeHTTP)
 	r.With(authMw).Post("/api/v1/videos/{id}/complete", uploadProxy.ServeHTTP)
 
+	// --- HLS token for private videos (signed URL 1h) — must be before generic /videos/* proxy ---
+	r.With(authMw).Get("/api/v1/videos/{id}/hls-token", gwmw.HLSTokenHandler(jwtSecret, internalToken, metadataURL))
+
 	// --- Metadata service ---
 	// Публичные GET (лист и деталь) — без JWT
 	r.Get("/api/v1/videos", metadataProxy.ServeHTTP)
@@ -128,9 +131,9 @@ func main() {
 	r.With(authMw).Delete("/api/v1/videos/*", metadataProxy.ServeHTTP)
 	r.With(authMw).Put("/api/v1/videos/*", metadataProxy.ServeHTTP)
 
-	// --- HLS / VOD: публичный, прокси на nginx-vod (JIT) ---
-	// nginx-vod отдаёт master.m3u8 и сегменты; кэш заголовки ставит сам.
-	r.Handle("/hls/*", vodProxy)
+	// --- HLS / VOD: защищён HLSAuth (private 403 без токена, public пропуск) ---
+	hlsAuth := gwmw.HLSAuth(jwtSecret, internalToken, metadataURL)
+	r.With(hlsAuth).Handle("/hls/*", vodProxy)
 
 	// --- Thumbnails / public MinIO objects via gateway (avoid direct :9000 CORS) ---
 	// frontend uses /thumbnails/{id}/thumb.jpg ; gateway proxies to MinIO bucket `videos`

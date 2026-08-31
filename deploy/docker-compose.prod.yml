@@ -4,8 +4,9 @@ services:
   nginx-vod:
     environment:
       TZ: UTC
+      ENV: prod
     volumes:
-      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.prod.conf.template:ro
 
   gateway:
     environment:

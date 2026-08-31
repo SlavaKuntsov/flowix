@@ -18,9 +18,10 @@ func NewVideoRepo(pool *pgxpool.Pool) *VideoRepo { return &VideoRepo{pool: pool}
 
 func (r *VideoRepo) Create(ctx context.Context, ownerID, title, description string) (*model.Video, error) {
 	id := uuid.New().String()
-	q := `INSERT INTO videos (id, owner_id, title, description, status) VALUES ($1,$2,$3,$4,'uploaded') RETURNING id, owner_id, title, description, duration, status, thumbnail_s3_key, created_at`
+	vis := model.VisibilityPublic
+	q := `INSERT INTO videos (id, owner_id, title, description, status, visibility) VALUES ($1,$2,$3,$4,'uploaded',$5) RETURNING id, owner_id, title, description, duration, status, visibility, thumbnail_s3_key, created_at`
 	v := &model.Video{}
-	err := r.pool.QueryRow(ctx, q, id, ownerID, title, description).Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.ThumbnailS3Key, &v.CreatedAt)
+	err := r.pool.QueryRow(ctx, q, id, ownerID, title, description, vis).Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.Visibility, &v.ThumbnailS3Key, &v.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create video: %w", err)
 	}
@@ -34,9 +35,9 @@ func (r *VideoRepo) Create(ctx context.Context, ownerID, title, description stri
 }
 
 func (r *VideoRepo) GetByID(ctx context.Context, id string) (*model.Video, error) {
-	q := `SELECT v.id, v.owner_id, u.email, v.title, v.description, v.duration, v.status, v.thumbnail_s3_key, v.created_at FROM videos v LEFT JOIN users u ON u.id=v.owner_id WHERE v.id=$1`
+	q := `SELECT v.id, v.owner_id, u.email, v.title, v.description, v.duration, v.status, COALESCE(v.visibility::text,'public'), v.thumbnail_s3_key, v.created_at FROM videos v LEFT JOIN users u ON u.id=v.owner_id WHERE v.id=$1`
 	v := &model.Video{}
-	err := r.pool.QueryRow(ctx, q, id).Scan(&v.ID, &v.OwnerID, &v.OwnerEmail, &v.Title, &v.Description, &v.Duration, &v.Status, &v.ThumbnailS3Key, &v.CreatedAt)
+	err := r.pool.QueryRow(ctx, q, id).Scan(&v.ID, &v.OwnerID, &v.OwnerEmail, &v.Title, &v.Description, &v.Duration, &v.Status, &v.Visibility, &v.ThumbnailS3Key, &v.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +62,7 @@ func (r *VideoRepo) GetByID(ctx context.Context, id string) (*model.Video, error
 }
 
 func (r *VideoRepo) List(ctx context.Context, limit, offset int) ([]model.Video, error) {
-	q := `SELECT v.id, v.owner_id, u.email, v.title, v.description, v.duration, v.status, v.thumbnail_s3_key, v.created_at FROM videos v LEFT JOIN users u ON u.id=v.owner_id ORDER BY v.created_at DESC LIMIT $1 OFFSET $2`
+	q := `SELECT v.id, v.owner_id, u.email, v.title, v.description, v.duration, v.status, COALESCE(v.visibility::text,'public'), v.thumbnail_s3_key, v.created_at FROM videos v LEFT JOIN users u ON u.id=v.owner_id ORDER BY v.created_at DESC LIMIT $1 OFFSET $2`
 	rows, err := r.pool.Query(ctx, q, limit, offset)
 	if err != nil {
 		return nil, err
@@ -70,7 +71,7 @@ func (r *VideoRepo) List(ctx context.Context, limit, offset int) ([]model.Video,
 	var out []model.Video
 	for rows.Next() {
 		var v model.Video
-		if err := rows.Scan(&v.ID, &v.OwnerID, &v.OwnerEmail, &v.Title, &v.Description, &v.Duration, &v.Status, &v.ThumbnailS3Key, &v.CreatedAt); err == nil {
+		if err := rows.Scan(&v.ID, &v.OwnerID, &v.OwnerEmail, &v.Title, &v.Description, &v.Duration, &v.Status, &v.Visibility, &v.ThumbnailS3Key, &v.CreatedAt); err == nil {
 			if v.ThumbnailS3Key != nil {
 				u := "/thumbnails/" + v.ID + "/thumb.jpg"
 				v.ThumbnailURL = &u
@@ -98,6 +99,15 @@ func (r *VideoRepo) Update(ctx context.Context, id, ownerID string, req model.Up
 	}
 	if req.Description != nil {
 		_, err = r.pool.Exec(ctx, `UPDATE videos SET description=$1 WHERE id=$2`, *req.Description, id)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if req.Visibility != nil {
+		if !req.Visibility.Valid() {
+			return nil, fmt.Errorf("invalid visibility")
+		}
+		_, err = r.pool.Exec(ctx, `UPDATE videos SET visibility=$1 WHERE id=$2`, *req.Visibility, id)
 		if err != nil {
 			return nil, err
 		}

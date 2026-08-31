@@ -1,6 +1,6 @@
 "use client";
 import VideoPlayer from "@/components/VideoPlayer";
-import { deleteVideo, getHlsUrl, getVideo, type Video } from "@/lib/api";
+import { deleteVideo, getHlsUrl, getHlsToken, getVideo, updateVideo, type Video } from "@/lib/api";
 import { useAuth } from "@/store/auth";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -21,6 +21,8 @@ export default function WatchPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
+  const [hlsSrc, setHlsSrc] = useState<string | null>(null);
+  const [visibility, setVisibility] = useState<string>("public");
 
   useEffect(() => {
     if (!id) return;
@@ -49,6 +51,26 @@ export default function WatchPage() {
     };
   }, [id]);
 
+  const hlsReady = video?.status === "ready";
+  const isOwner = !!(userId && video && video.owner_id === userId);
+
+  useEffect(() => {
+    if (!video) return;
+    setVisibility(video.visibility || "public");
+    if (!hlsReady) {
+      setHlsSrc(null);
+      return;
+    }
+    if (video.visibility === "private" && isOwner) {
+      getHlsToken(video.id)
+        .then((t) => setHlsSrc(getHlsUrl(video.id, t.token)))
+        .catch(() => setHlsSrc(getHlsUrl(video.id)));
+    } else {
+      setHlsSrc(getHlsUrl(video.id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [video?.id, video?.visibility, hlsReady, isOwner]);
+
   if (loading)
     return (
       <div className="py-20 text-center">
@@ -71,9 +93,6 @@ export default function WatchPage() {
       </div>
     );
 
-  const hlsReady = video.status === "ready";
-  const isOwner = userId && video.owner_id === userId;
-
   const handleDelete = async () => {
     if (!confirm(`Удалить "${video.title}"? Это удалит все файлы безвозвратно.`)) return;
     setDeleting(true);
@@ -86,11 +105,21 @@ export default function WatchPage() {
     }
   };
 
+  const handleVisibility = async (v: string) => {
+    try {
+      const upd = await updateVideo(video.id, { visibility: v as any });
+      setVideo(upd);
+      setVisibility(upd.visibility || v);
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <div className="">
         {hlsReady ? (
-          <VideoPlayer src={getHlsUrl(video.id)} />
+          hlsSrc ? <VideoPlayer src={hlsSrc} /> : <div className="flex aspect-video items-center justify-center rounded-xl border bg-white text-zinc-500">Loading HLS…</div>
         ) : (
           <div className="flex aspect-video items-center justify-center rounded-xl border bg-white text-zinc-500">
             {video.status === "processing" || video.status === "uploaded" ? (
@@ -122,7 +151,16 @@ export default function WatchPage() {
           {video.duration && <span className="rounded bg-zinc-100 px-2 py-1">{video.duration}s</span>}
           <span className="rounded bg-zinc-100 px-2 py-1">{new Date(video.created_at).toLocaleString()}</span>
           <span className={`rounded px-2 py-1 ${isOwner ? "bg-green-100 text-green-700" : "bg-zinc-100"}`}>@{video.owner_email || video.owner_id.slice(0, 8)}{isOwner ? " · твое" : ""}</span>
+          <span className="rounded bg-zinc-100 px-2 py-1">visibility: {video.visibility || "public"}</span>
         </div>
+        {isOwner && (
+          <div className="mt-2 flex gap-2 text-xs">
+            <span className="self-center text-zinc-500">Visibility:</span>
+            {["public", "private", "unlisted"].map((v) => (
+              <button key={v} onClick={() => handleVisibility(v)} className={`rounded px-2 py-1 ${visibility === v ? "bg-black text-white" : "bg-zinc-100 hover:bg-zinc-200"}`}>{v}</button>
+            ))}
+          </div>
+        )}
         {!hlsReady && (
           <p className="mt-2 text-xs text-zinc-400">
             HLS will appear at <code className="rounded bg-zinc-100 px-1">{getHlsUrl(video.id)}</code> once ready.
