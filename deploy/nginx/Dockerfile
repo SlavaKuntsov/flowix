@@ -31,6 +31,7 @@ RUN apk add --no-cache ffmpeg libxml2
 
 COPY --from=builder /tmp/nginx-${NGINX_VERSION}/objs/ngx_http_vod_module.so /usr/lib/nginx/modules/ngx_http_vod_module.so
 COPY nginx.conf /etc/nginx/nginx.conf.template
+COPY nginx.prod.conf /etc/nginx/nginx.prod.conf.template
 
 EXPOSE 80
-CMD ["/bin/sh", "-c", "envsubst '$$INTERNAL_TOKEN' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && exec nginx -g 'daemon off;'"]
+CMD ["/bin/sh", "-c", "if [ \"$ENV\" = \"prod\" ] && [ -f /etc/nginx/nginx.prod.conf.template ]; then TMPL=/etc/nginx/nginx.prod.conf.template; else TMPL=/etc/nginx/nginx.conf.template; fi; envsubst '$$INTERNAL_TOKEN' < \"$TMPL\" > /etc/nginx/nginx.conf && exec nginx -g 'daemon off;'"]
