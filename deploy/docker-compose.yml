@@ -1,10 +1,14 @@
 services:
   postgres:
     image: postgres:16-alpine
+    command: postgres -c password_encryption=md5
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-flowix}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowix}
       POSTGRES_DB: ${POSTGRES_DB:-flowix}
+      # Phase 15: pgbouncer uses md5, so postgres must store md5 hashes (scram breaks pgbouncer md5)
+      POSTGRES_INITDB_ARGS: "--auth-host=md5 --auth-local=md5"
+      POSTGRES_HOST_AUTH_METHOD: md5
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
