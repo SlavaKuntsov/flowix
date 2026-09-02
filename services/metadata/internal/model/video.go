@@ -35,6 +35,7 @@ type Video struct {
 	ThumbnailS3Key *string     `json:"thumbnail_s3_key,omitempty"`
 	ThumbnailURL   *string     `json:"thumbnail_url,omitempty"`
 	CreatedAt      time.Time   `json:"created_at"`
+	UpdatedAt      time.Time   `json:"updated_at"`
 	Renditions     []Rendition `json:"renditions,omitempty"`
 }
 

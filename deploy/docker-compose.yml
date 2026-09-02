@@ -1,10 +1,14 @@
 services:
   postgres:
     image: postgres:16-alpine
+    command: postgres -c password_encryption=md5
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-flowix}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowix}
       POSTGRES_DB: ${POSTGRES_DB:-flowix}
+      # Phase 15: pgbouncer uses md5, so postgres must store md5 hashes (scram breaks pgbouncer md5)
+      POSTGRES_INITDB_ARGS: "--auth-host=md5 --auth-local=md5"
+      POSTGRES_HOST_AUTH_METHOD: md5
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -15,6 +19,35 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flowix} -d ${POSTGRES_DB:-flowix}"]
       interval: 5s
       retries: 10
+
+  # Phase 15 cost: PgBouncer in transaction mode to reduce Postgres connections (pool_size tuned in services/auth & metadata)
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-flowix}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-flowix}
+      DB_NAME: ${POSTGRES_DB:-flowix}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-100}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
+      RESERVE_POOL_SIZE: 5
+      RESERVE_POOL_TIMEOUT: 2
+      ADMIN_USERS: ${POSTGRES_USER:-flowix}
+      AUTH_TYPE: md5
+      SERVER_RESET_QUERY: DISCARD ALL
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,search_path
+    ports:
+      - "${PGBOUNCER_PORT:-6432}:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "psql -h postgres -p 5432 -U ${POSTGRES_USER:-flowix} -d ${POSTGRES_DB:-flowix} -c 'SELECT 1' >/dev/null 2>&1 || pg_isready -h postgres -p 5432 -U ${POSTGRES_USER:-flowix} -d ${POSTGRES_DB:-flowix}"]
+      interval: 10s
+      retries: 10
+      start_period: 10s
 
   migrate:
     image: migrate/migrate:v4.18.2
@@ -57,6 +90,8 @@ services:
       /usr/bin/mc anonymous set download local/$${VIDEO_STORAGE_BUCKET:-videos}/thumbnails || true &&
       /usr/bin/mc anonymous set private local/$${VIDEO_STORAGE_BUCKET:-videos}/raw || true &&
       echo '[minio-setup] bucket policy: private + renditions/thumbnails download, raw private' &&
+      (/usr/bin/mc ilm rule add local/$${VIDEO_STORAGE_BUCKET:-videos} --expire-days '7' --prefix 'raw/' 2>/dev/null && echo '[minio-setup] ilm raw 7d added (rule)') || (/usr/bin/mc ilm add local/$${VIDEO_STORAGE_BUCKET:-videos} --expiry-days '7' --prefix 'raw/' 2>/dev/null && echo '[minio-setup] ilm raw 7d added (legacy)') || echo '[minio-setup] ilm raw already exists or skipped' &&
+      /usr/bin/mc ilm ls local/$${VIDEO_STORAGE_BUCKET:-videos} 2>/dev/null | head -n 20 || true &&
       exit 0
       "
     environment:
@@ -103,6 +138,10 @@ services:
     build: ../services/auth
     environment:
       DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
+      # Phase 15: set PGBOUNCER_ENABLED=true to route via pgbouncer:5432 (pooled)
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
+      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
+      PGBOUNCER_ENABLED: ${PGBOUNCER_ENABLED:-false}
       RABBITMQ_URL: amqp://flowix:flowix@rabbitmq:5672/
       JWT_SECRET: ${JWT_SECRET}
       MINIO_ENDPOINT: minio:9000
@@ -129,6 +168,8 @@ services:
     build: ../services/metadata
     environment:
       DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
+      PGBOUNCER_ENABLED: ${PGBOUNCER_ENABLED:-false}
       JWT_SECRET: ${JWT_SECRET}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
       MINIO_ENDPOINT: minio:9000
@@ -198,6 +239,7 @@ services:
       ENCODE_MODE: ${ENCODE_MODE:-cbr}
       FFMPEG_HWACCEL: ${FFMPEG_HWACCEL:-auto}
       TRANSCODER_PIPE_INPUT: ${TRANSCODER_PIPE_INPUT:-true}
+      KEEP_RAW: ${KEEP_RAW:-false}
       METRICS_PORT: ${TRANSCODER_METRICS_PORT:-8004}
     ports:
       - "${TRANSCODER_METRICS_PORT:-8004}:8004"

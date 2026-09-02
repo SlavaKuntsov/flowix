@@ -27,6 +27,7 @@ import (
 	"flowix/metadata/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	zlog "github.com/rs/zerolog/log"
@@ -44,6 +45,14 @@ func main() {
 	}
 	// pgx doesn't like sslmode, strip it for compat (same as auth)
 	dbURL = stripSSLMode(dbURL)
+	// Phase 15: if PGBOUNCER_ENABLED, rewrite host to pgbouncer service (transaction pooling)
+	if strings.ToLower(os.Getenv("PGBOUNCER_ENABLED")) == "true" && !strings.Contains(dbURL, "pgbouncer") {
+		dbURL = strings.ReplaceAll(dbURL, "@postgres:", "@pgbouncer:")
+		dbURL = strings.ReplaceAll(dbURL, "@postgres/", "@pgbouncer/")
+		dbURL = strings.ReplaceAll(dbURL, "@localhost:", "@pgbouncer:")
+		dbURL = strings.ReplaceAll(dbURL, "localhost:", "pgbouncer:")
+		dbURL = strings.ReplaceAll(dbURL, "127.0.0.1:", "pgbouncer:")
+	}
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
 		jwtSecret = "change-me-super-secret-jwt-key-32chars"
@@ -73,7 +82,25 @@ func main() {
 	}
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 
-	pool, err := pgxpool.New(context.Background(), dbURL)
+	// Phase 15: tune pool for PgBouncer (transaction mode requires simple protocol, no prepared statements)
+	poolCfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		log.Fatalf("pgxpool parse: %v", err)
+	}
+	if v := os.Getenv("DATABASE_POOL_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			poolCfg.MaxConns = int32(n)
+		}
+	} else {
+		// default 5 conns when behind PgBouncer, else pgx default
+		if strings.Contains(dbURL, "pgbouncer") {
+			poolCfg.MaxConns = 5
+		}
+	}
+	if strings.Contains(dbURL, "pgbouncer") || strings.ToLower(os.Getenv("PGBOUNCER_ENABLED")) == "true" {
+		poolCfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		log.Fatalf("pgxpool: %v", err)
 	}
