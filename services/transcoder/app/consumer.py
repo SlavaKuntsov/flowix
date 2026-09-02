@@ -40,6 +40,7 @@ MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 BUCKET = os.getenv("VIDEO_STORAGE_BUCKET", "videos")
 METADATA_URL = os.getenv("METADATA_URL", "http://metadata:8002")
 INTERNAL_TOKEN = os.getenv("INTERNAL_TOKEN", "")
+KEEP_RAW = os.getenv("KEEP_RAW", "false").lower() in ("1", "true", "yes")
 QUEUE = "video.uploaded"
 DLX_EXCHANGE = "dlx"
 DLQ = QUEUE + ".dlq"
@@ -76,7 +77,9 @@ def get_minio():
     )
 
 
-def update_status(video_id: str, status: str, renditions=None, thumbnail_s3_key: str | None = None):
+def update_status(
+    video_id: str, status: str, renditions=None, thumbnail_s3_key: str | None = None
+) -> bool:
     url = f"{METADATA_URL}/internal/videos/{video_id}/status"
     payload: dict = {"status": status}
     if renditions:
@@ -90,8 +93,10 @@ def update_status(video_id: str, status: str, renditions=None, thumbnail_s3_key:
         r = requests.patch(url, json=payload, headers=headers, timeout=5)
         r.raise_for_status()
         log.info("updated %s -> %s", video_id, status)
+        return True
     except Exception as e:
         log.error("metadata update %s failed: %s", video_id, e)
+        return False
 
 
 def probe_video(path: str) -> dict | None:
@@ -824,7 +829,14 @@ def process_message(body: bytes):
                 log.warning("thumbnail upload failed: %s", e)
                 thumb_key = None
 
-    update_status(video_id, "ready", renditions, thumb_key)
+    ok = update_status(video_id, "ready", renditions, thumb_key)
+    # Phase 15 cost: delete raw only after metadata confirmed ready. Non-fatal; lifecycle 7d is safety net.
+    if ok and not KEEP_RAW:
+        try:
+            mc.remove_object(BUCKET, s3_key)
+            log.info("cleaned raw s3://%s/%s after ready (KEEP_RAW=false)", BUCKET, s3_key)
+        except Exception as e:
+            log.warning("raw cleanup failed for %s: %s", s3_key, e)
 
 
 _shutdown = False
