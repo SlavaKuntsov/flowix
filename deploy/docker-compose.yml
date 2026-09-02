@@ -18,7 +18,7 @@ services:
 
   # Phase 15 cost: PgBouncer in transaction mode to reduce Postgres connections (pool_size tuned in services/auth & metadata)
   pgbouncer:
-    image: edoburu/pgbouncer:1.23.1
+    image: edoburu/pgbouncer:latest
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
