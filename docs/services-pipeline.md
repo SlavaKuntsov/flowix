@@ -22,12 +22,13 @@ Flowix — MVP видеоплатформы с адаптивным стрими
 | **auth** | Python FastAPI | `:8001` | Регистрация, логин, refresh, `GET /me`. Выпускает JWT (`HS256`, access 15м / refresh 7д, Argon2) | `postgres.users` |
 | **metadata** | Go + `chi` | `:8002` | CRUD видео: `GET/POST /api/v1/videos`, `GET/PATCH/DELETE /api/v1/videos/:id`. Внутренний `PATCH /internal/videos/:id/status` для transcoder'а. Валидация, пагинация | `postgres.videos`, `video_renditions` |
 | **upload** | Go + `chi` | `:8003` | Принимает `multipart/form-data` на `POST /api/v1/videos/upload`, льёт оригинал в MinIO `raw/{id}/original.mp4`, создаёт запись `status=uploaded` через metadata, публикует `video.uploaded` в RabbitMQ | MinIO + RabbitMQ + metadata |
-| **transcoder** | Python Celery + FFmpeg | — (воркер) | Слушает `video.uploaded`, качает оригинал, `ffprobe` → 3× FFmpeg параллельно (360p/720p/1080p), льёт `renditions/{id}/{quality}.mp4` в MinIO, `PATCH metadata status=ready`, публикует `video.transcoded`. Тут же делает превью (`-ss 1 -vframes 1`) | MinIO, RabbitMQ, metadata |
-| **streaming (nginx-vod)** | nginx + `kaltura/nginx-vod-module` | `:8081` | Отдаёт HLS/DASH на лету: `GET /hls/{id}/master.m3u8` склеивает 3 MP4 в мастер-манифест, сегменты режет по ключевым кадрам. JIT — храним только MP4, сегменты не прегенерим. `vod_mode mapped; proxy_pass minio:9000` | Читает MinIO |
-| **frontend** | Next.js 14 + `hls.js` + `zustand` + `tailwind` | `:3000` | Лента `/`, просмотр `/watch/[id]` (`new Hls().loadSource(master.m3u8)` + `playbackRate 0.5–2x`), загрузка `/upload` (multipart + прогресс) | Gateway + HLS |
-| **infra: Postgres** | `postgres:16-alpine` | `:5432` | `users`, `videos (status: uploaded/processing/ready/failed)`, `video_renditions` — см. `deploy/postgres/init.sql:1` | — |
-| **infra: MinIO** | `minio/minio` | `:9000/:9001` | S3-совместимое хранилище: `raw/` оригиналы, `renditions/` готовые MP4, превью | — |
-| **infra: RabbitMQ** | `rabbitmq:3-management` | `:5672/:15672` | Очередь `video.uploaded` / `video.transcoded`, Celery брокер. UI на `:15672` | — |
+| **transcoder** | Python pika + FFmpeg (sequential) | — (воркер) | Слушает `video.uploaded`, качает оригинал, `ffprobe` → адаптивный ladder (720p first, `CRF 23`/`maxrate`), `sequential` 1 рип за раз (`-threads 2 -preset veryfast`, `-g fps*2`), льёт `renditions/{id}/{quality}.mp4` + общий `audio.m4a` (`-c:a copy`), превью из 360p (`-ss 1`), `PATCH metadata status=ready` → при `KEEP_RAW=false` сразу `RemoveObject raw/{id}/original.mp4` (fallback lifecycle) | MinIO, RabbitMQ, metadata |
+| **streaming (nginx-vod)** | nginx + `kaltura/nginx-vod-module` | `:8081` | Отдаёт HLS/DASH на лету: `GET /hls/{id}/master.m3u8` и `GET /dash/{id}/manifest.mpd` склеивают MP4 в манифест, сегменты режет JIT. `vod_mode mapped; proxy_pass minio:9000`; `vod_dash` опционально | Читает MinIO |
+| **frontend** | Next.js 14 + `hls.js` + `zustand` + `tailwind` | `:3000` | `output: standalone` (~120МБ), лента `/`, `/watch/[id]` (`hls.js` + `playbackRate 0.5–2x`), загрузка `/upload` (presign `PUT` + `localStorage` resume) | Gateway + HLS |
+| **infra: Postgres** | `postgres:16-alpine` (`password_encryption=md5`) | `:5432` | `users`, `videos (status, visibility, updated_at + trigger)`, `video_renditions` — см. `deploy/postgres/init.sql:1` и `migrations/000003` | — |
+| **infra: PgBouncer** | `edoburu/pgbouncer` (`transaction`, pool 20) | `:6432` | Пул перед Postgres (`PGBOUNCER_ENABLED=true` → `pgbouncer:5432`), `auth_type md5`, `server_reset_query DISCARD ALL` — экономит коннекты при N видео | Postgres |
+| **infra: MinIO** | `minio/minio` | `:9000/:9001` | S3: `raw/` (private, ILM `7d` `deploy/docker-compose.yml:89`, немедленная чистка `KEEP_RAW=false`), `renditions/` + `thumbnails/` (`download`) | — |
+| **infra: RabbitMQ** | `rabbitmq:3-management` | `:5672/:15672` | Очередь `video.uploaded` + DLX/DLQ/retry (30s, 3×), `video.transcode.*` fan-out, pgbouncer не трогает | — |
 
 Каждый сервис — свой `Dockerfile` + `go.mod` / `pyproject.toml` (uv), собирается независимо. Локально — `make up` / `docker compose --env-file .env -f deploy/docker-compose.yml up --build -d`.
 
@@ -56,31 +57,29 @@ Flowix — MVP видеоплатформы с адаптивным стрими
                        └─5 201 {id, status: uploaded} → gateway → frontend
                                │
                                ▼
-                        ┌──────────┐ RabbitMQ video.uploaded
-                        │transcoder│ Celery worker
-                        └──────────┘   │
-                               ├─ download raw/{id}/original.mp4
-                               ├─ ffprobe (fps/duration проверка)
-                               ├─ 3× FFmpeg параллельно (см. §4)
-                               │    -vf scale=-2:360 -b:v 800k ...
-                               │    -vf scale=-2:720 -b:v 2500k
-                               │    -vf scale=-2:1080 -b:v 5000k
-                               ├─ PutObject renditions/{id}/360.mp4, 720.mp4, 1080.mp4
-                               ├─ thumbnail -ss 1 -vframes 1 → thumbs/{id}.jpg
-                               ├─ PATCH metadata /internal/videos/:id/status → ready
-                               └─ Publish video.transcoded {video_id, renditions[], status}
+                         ┌──────────┐ RabbitMQ video.uploaded (DLX + retry)
+                         │transcoder│ pika worker (sequential, heartbeat 600)
+                         └──────────┘   │
+                                ├─ download raw/{id}/original.mp4 (или stream pipe:0)
+                                ├─ ffprobe → adaptive ladder (720p first)
+                                ├─ sequential FFmpeg (см. §4) + shared audio.m4a
+                                ├─ PutObject renditions/{id}/{360,720,1080}.mp4 (incremental ready)
+                                ├─ thumbnail from 360p → thumbnails/{id}/thumb.jpg
+                                ├─ PATCH metadata /internal/videos/:id/status → ready
+                                ├─ if KEEP_RAW=false → RemoveObject raw/{id}/original.mp4 (lifecycle 7d fallback)
+                                └─ Publish video.transcoded {video_id, renditions[], status}
                                         │
                                         ▼
-                               ┌──────────────────┐
-                               │    metadata      │  videos.status=ready
-                               │    :8002         │  video_renditions (quality, bitrate, s3_key)
-                               └──────────────────┘
+                                ┌──────────────────┐
+                                │    metadata      │  videos.status=ready (updated_at), pgbouncer :6432
+                                │    :8002         │  video_renditions (quality, bitrate, s3_key)
+                                └──────────────────┘
                                         │
                                         ▼
    ┌──────────┐  GET /hls/{id}/master.m3u8
-   │  nginx   │◄── frontend hls.js (через gateway /hls/*)
-   │  -vod    │  ──► vod_mode mapped → proxy_pass minio:9000
-   │  :8081   │  склеивает 3 MP4 → HLS манифест + сегменты .m4s
+    │  nginx   │◄── frontend hls.js (через gateway /hls/* + /dash/*)
+   │  -vod    │  ──► vod_mode mapped → proxy_pass minio:9000 (hls + dash)
+   │  :8081   │  склеивает MP4 → HLS/DASH манифест + сегменты .m4s
    └──────────┘
         │
         ▼
@@ -137,15 +136,16 @@ ffmpeg -i in.mp4 -vn -c:a aac -b:a 128k -ar 48000 -ac 2 audio.m4a
 ## 6. Где что лежит в репо
 
 ```
-services/gateway|metadata|upload  — Go chi (1.27-alpine), см. их README.md
-services/auth                     — FastAPI + uv, src/routers/auth.py
-services/transcoder               — Celery app/{celery_app.py,tasks.py}
-frontend/                         — Next 14 App Router
-deploy/docker-compose.yml         — infra + все сервисы (healthcheck service_healthy)
+services/gateway|metadata|upload  — Go chi (1.27-alpine), pgx + pgbouncer simple_protocol
+services/auth                     — FastAPI + uv, src/routers/auth.py, pool_size 5 (pgbouncer)
+services/transcoder               — pika app/consumer.py (sequential, KEEP_RAW, heartbeat 600)
+frontend/                         — Next 14 App Router, output: standalone (~120MB)
+deploy/docker-compose.yml         — infra + pgbouncer :6432 + MinIO ILM raw/ 7d + все сервисы
 deploy/docker-compose.prod.yml    — prod overrides (CDN headers, limits)
-deploy/nginx/{nginx.conf,nginx.prod.conf,Dockerfile} — vod_mode mapped, CDN cache
-deploy/postgres/init.sql          — DDL users/videos/renditions
-docs/PLAN.md                      — 8 фаз план (0–8 завершены)
+deploy/nginx/{nginx.conf,nginx.prod.conf,Dockerfile} — vod_mode mapped (hls+dash), CDN cache
+deploy/postgres/init.sql          — DDL users/videos/renditions (updated_at + trigger)
+deploy/migrations/000003_add_updated_at.up.sql — updated_at
+docs/PLAN.md                      — 15 фаз (0–15 DONE)
 docs/spec.md                      — полный архив ТЗ (бывший AGENTS.md)
 docs/SWAGGER.md                   — как генерить OpenAPI для Go
 docs/ZED.md                       — настройки Zed IDE

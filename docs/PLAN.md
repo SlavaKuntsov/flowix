@@ -1,6 +1,6 @@
 # Flowix — План реализации
 
-> Дата: 2026-08-30 (переписан после senior review 2026-08-29) · Обновлен: 2026-08-30 — Фазы 9,10,10b,11 DONE (очередь DLX+удаление видео)
+> Дата: 2026-08-30 (переписан после senior review 2026-08-29) · Обновлен: 2026-09-02 — Фазы 9,10,10b,11,12,13,14,15 DONE (очередь DLX+удаление+storage)
 > Стек: RabbitMQ + chi `go-chi/chi/v5` + nginx-vod JIT + Next.js 14
 > Исходники: `docs/spec.md:1` (ТЗ), `docs/services-pipeline.md:1` (пайплайн), `AGENTS.md:1` (гайдлайны)
 > Ревью-отчет: см. чат 2026-08-29 (P0/P1/P2 находки)
@@ -242,18 +242,20 @@
 
 ---
 
-## Фаза 15 — P2: Стоимость и хранение
+## Фаза 15 — P2: Стоимость и хранение ✅ DONE 2026-09-02
 
-**Приоритет: P2 Medium** · Оценка: 1-2 дня · Зависит от: Фазы 11, 12
+**Приоритет: P2 Medium** · Оценка: 1-2 дня · Зависит от: Фазы 11, 12 · **Выполнено**
 
-**Задачи:**
+**Выполнено 2026-09-02:**
 
-1. MinIO lifecycle: удалять `raw/{id}/original.mp4` через 7d после `ready` (или сразу, оставлять только если `keep_raw=true`). Добавить `mc ilm add --expiry-days 7`.
-2. Добавить `pgbouncer` перед postgres, `pool_pre_ping=True` уже есть `services/auth/src/core/db.py:26` — настроить `pool_size`.
-3. `frontend` `next.config.mjs` — `output: standalone` для меньшего образа, `VideoPlayer.tsx:34` `maxBufferLength:10` уже экономит память клиента — оставить.
-4. DASH опционально (nginx-vod уже умеет `vod_dash`), но после HLS харденинга.
+1. **MinIO lifecycle + raw cleanup:** `deploy/docker-compose.yml:89` `minio-setup` → `mc ilm rule add --expire-days 7 --prefix raw/` (проверено `mc ilm ls raw/ 7`), `services/transcoder/app/consumer.py:43` `KEEP_RAW=false` → сразу `RemoveObject raw/{id}/original.mp4` после `PATCH ready` (только если `update_status` ok), fallback lifecycle; `.env.example:37` `KEEP_RAW=false`.
+2. **PgBouncer:** `deploy/docker-compose.yml:18` `pgbouncer:6432` `edoburu/pgbouncer:latest` `transaction` `default_pool_size 20`, `postgres` `password_encryption=md5` + `pg_hba md5` для SCRAM-совместимости, `services/auth/src/core/db.py:28` `pool_size 5` `statement_cache_size=0` + реврайт `postgres→pgbouncer` при `PGBOUNCER_ENABLED=true`, `services/metadata/cmd/server/main.go:47` `MaxConns 5` `QueryExecModeSimpleProtocol`.
+3. **Frontend:** `frontend/next.config.mjs:3` `output: standalone` уже был, `frontend/Dockerfile:13` multi-stage `standalone` (~120MB), `VideoPlayer.tsx` `maxBufferLength` сохранен.
+4. **DASH:** `deploy/nginx/nginx.conf:68` `location /dash/` `vod dash` + fix `mapping` regex `hls/|dash/` для JIT.
 
-**Проверка:** `raw/` удаляется, `videos` таблица имеет `updated_at`, `docker images` FE <200MB.
+**Затронуто:** `deploy/docker-compose.yml`, `deploy/migrations/000003_add_updated_at.*`, `deploy/postgres/init.sql:38` `updated_at`, `deploy/nginx/nginx.conf`, `services/auth/src/core/db.py`, `services/metadata/.../video.go`, `services/transcoder/app/consumer.py`, `.env.example`.
+
+**Проверка:** `raw/` удаляется сразу + 7d safety, `videos` имеет `updated_at TIMESTAMPTZ + trigger`, `psql -h pgbouncer -p 5432` ok, `docker ps` pgbouncer healthy.
 
 ---
 
