@@ -235,7 +235,9 @@ def test_process_message_idempotent_failed_skip():
 def test_declare_topology():
     mock_ch = MagicMock()
     cons.declare_topology(mock_ch)
-    mock_ch.exchange_declare.assert_called_once_with(exchange=cons.DLX_EXCHANGE, exchange_type="direct", durable=True)
+    mock_ch.exchange_declare.assert_called_once_with(
+        exchange=cons.DLX_EXCHANGE, exchange_type="direct", durable=True
+    )
     # dlq, retry, main + 3 fan-out queues (Phase 12)
     assert mock_ch.queue_declare.call_count == 6
     calls = [c[1].get("queue") for c in mock_ch.queue_declare.call_args_list]
@@ -245,10 +247,14 @@ def test_declare_topology():
     for fq in cons.FANOUT_QUEUES:
         assert fq in calls
     # retry queue has TTL
-    retry_call = [c for c in mock_ch.queue_declare.call_args_list if c[1].get("queue") == cons.RETRY_QUEUE][0]
+    retry_call = [
+        c for c in mock_ch.queue_declare.call_args_list if c[1].get("queue") == cons.RETRY_QUEUE
+    ][0]
     assert retry_call[1]["arguments"]["x-message-ttl"] == cons.RETRY_TTL_MS
     # main queue has DLX
-    main_call = [c for c in mock_ch.queue_declare.call_args_list if c[1].get("queue") == cons.QUEUE][0]
+    main_call = [
+        c for c in mock_ch.queue_declare.call_args_list if c[1].get("queue") == cons.QUEUE
+    ][0]
     assert main_call[1]["arguments"]["x-dead-letter-exchange"] == cons.DLX_EXCHANGE
 
 
@@ -256,3 +262,100 @@ def test_fps_from_probe_preserves_and_caps():
     assert cons._fps_from_probe({"streams": [{"avg_frame_rate": "24/1"}]}) == 24
     assert cons._fps_from_probe({"streams": [{"avg_frame_rate": "60/1"}]}) == 30
     assert cons._fps_from_probe(None) == 30
+
+
+def test_process_message_keep_raw_false_deletes(monkeypatch):
+    body = json.dumps(
+        {"video_id": "vid-keep-false", "s3_key": "raw/vid-keep-false/original.mp4"}
+    ).encode()
+    fake_minio = MagicMock()
+    fake_minio.stat_object.return_value = MagicMock(size=100)
+    fake_minio.fget_object.return_value = None
+    fake_minio.fput_object.return_value = None
+    monkeypatch.setattr(cons, "KEEP_RAW", False)
+    with (
+        patch("app.consumer.get_minio", return_value=fake_minio),
+        patch("app.consumer.update_status", return_value=True) as mock_status,
+        patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.encode_audio", return_value=None),
+        patch("app.consumer.transcode_one", return_value=None),
+        patch("app.consumer.transcode_thumbnail", return_value=None),
+        patch("app.consumer.transcode_thumbnail_from_rendition", return_value=None),
+        patch("os.path.exists", return_value=False),
+    ):
+        cons.process_message(body)
+        fake_minio.remove_object.assert_called_once_with(
+            cons.BUCKET, "raw/vid-keep-false/original.mp4"
+        )
+        assert mock_status.call_args_list[-1][0][1] == "ready"
+
+
+def test_process_message_keep_raw_true_skips_delete(monkeypatch):
+    body = json.dumps(
+        {"video_id": "vid-keep-true", "s3_key": "raw/vid-keep-true/original.mp4"}
+    ).encode()
+    fake_minio = MagicMock()
+    fake_minio.stat_object.return_value = MagicMock(size=100)
+    fake_minio.fget_object.return_value = None
+    fake_minio.fput_object.return_value = None
+    monkeypatch.setattr(cons, "KEEP_RAW", True)
+    with (
+        patch("app.consumer.get_minio", return_value=fake_minio),
+        patch("app.consumer.update_status", return_value=True),
+        patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.encode_audio", return_value=None),
+        patch("app.consumer.transcode_one", return_value=None),
+        patch("app.consumer.transcode_thumbnail", return_value=None),
+        patch("app.consumer.transcode_thumbnail_from_rendition", return_value=None),
+        patch("os.path.exists", return_value=False),
+    ):
+        cons.process_message(body)
+        fake_minio.remove_object.assert_not_called()
+
+
+def test_process_message_raw_cleanup_failure_not_raises(monkeypatch):
+    body = json.dumps(
+        {"video_id": "vid-clean-fail", "s3_key": "raw/vid-clean-fail/original.mp4"}
+    ).encode()
+    fake_minio = MagicMock()
+    fake_minio.stat_object.return_value = MagicMock(size=100)
+    fake_minio.fget_object.return_value = None
+    fake_minio.fput_object.return_value = None
+    fake_minio.remove_object.side_effect = Exception("delete failed")
+    monkeypatch.setattr(cons, "KEEP_RAW", False)
+    with (
+        patch("app.consumer.get_minio", return_value=fake_minio),
+        patch("app.consumer.update_status", return_value=True),
+        patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.encode_audio", return_value=None),
+        patch("app.consumer.transcode_one", return_value=None),
+        patch("app.consumer.transcode_thumbnail", return_value=None),
+        patch("app.consumer.transcode_thumbnail_from_rendition", return_value=None),
+        patch("os.path.exists", return_value=False),
+    ):
+        # should not raise even if remove fails
+        cons.process_message(body)
+        fake_minio.remove_object.assert_called_once()
+
+
+def test_process_message_no_delete_when_metadata_update_fails(monkeypatch):
+    body = json.dumps(
+        {"video_id": "vid-no-delete", "s3_key": "raw/vid-no-delete/original.mp4"}
+    ).encode()
+    fake_minio = MagicMock()
+    fake_minio.stat_object.return_value = MagicMock(size=100)
+    fake_minio.fget_object.return_value = None
+    fake_minio.fput_object.return_value = None
+    monkeypatch.setattr(cons, "KEEP_RAW", False)
+    with (
+        patch("app.consumer.get_minio", return_value=fake_minio),
+        patch("app.consumer.update_status", return_value=False),
+        patch("app.consumer.probe_video", return_value={}),
+        patch("app.consumer.encode_audio", return_value=None),
+        patch("app.consumer.transcode_one", return_value=None),
+        patch("app.consumer.transcode_thumbnail", return_value=None),
+        patch("app.consumer.transcode_thumbnail_from_rendition", return_value=None),
+        patch("os.path.exists", return_value=False),
+    ):
+        cons.process_message(body)
+        fake_minio.remove_object.assert_not_called()
