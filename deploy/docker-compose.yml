@@ -99,6 +99,17 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
       VIDEO_STORAGE_BUCKET: ${VIDEO_STORAGE_BUCKET:-videos}
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+
   rabbitmq:
     image: rabbitmq:3-management-alpine
     environment:
@@ -138,6 +149,7 @@ services:
     build: ../services/auth
     environment:
       DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
       # Phase 15: set PGBOUNCER_ENABLED=true to route via pgbouncer:5432 (pooled)
       DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
       DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
@@ -377,6 +389,7 @@ volumes:
   pgdata:
   miniodata:
   rabbitdata:
+  redisdata:
   promdata:
   grafanadata:
   lokidata:
