@@ -5,8 +5,9 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
+from .core.limiter import limiter
 from .routers.auth import router
 
 # Unified JSON logging with trace_id (Phase 14)
@@ -33,6 +34,23 @@ app = FastAPI(title="flowix-auth", version="0.1.0")
 # CORS handled by gateway (single entry point) to avoid duplicate
 # Access-Control-Allow-Origin headers (gateway sets origin, upstream must not).
 # Auth is behind gateway; direct :8001 access is internal/Swagger only.
+if limiter is not None:
+    app.state.limiter = limiter  # type: ignore[attr-defined]
+    try:
+        from slowapi.errors import RateLimitExceeded
+        from slowapi.middleware import SlowAPIMiddleware
+
+        app.add_middleware(SlowAPIMiddleware)  # type: ignore[arg-type]
+
+        @app.exception_handler(RateLimitExceeded)
+        async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):  # type: ignore[no-redef]
+            return JSONResponse(
+                status_code=429, content={"detail": f"rate limit exceeded: {exc.detail}"}
+            )
+
+    except ImportError:
+        pass
+
 app.include_router(router)
 
 

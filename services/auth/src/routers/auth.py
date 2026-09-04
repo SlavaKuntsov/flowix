@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,8 +56,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def _login_impl(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)):  # type: ignore[no-untyped-def]
     q = await db.execute(select(User).where(User.email == body.email))
     user = q.scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
@@ -66,6 +65,22 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         access_token=create_access_token(str(user.id)),
         refresh_token=create_refresh_token(str(user.id)),
     )
+
+
+# Register login route with rate limit if limiter is available
+try:
+    from ..core.limiter import limiter as _lim  # type: ignore[import-not-found]
+
+    if _lim is not None:
+        router.post("/login", response_model=TokenResponse)(_lim.limit("5/minute")(_login_impl))  # type: ignore[attr-defined]
+        # expose for tests
+        login = _login_impl  # type: ignore[assignment]
+    else:
+        router.post("/login", response_model=TokenResponse)(_login_impl)
+        login = _login_impl  # type: ignore[assignment]
+except Exception:
+    router.post("/login", response_model=TokenResponse)(_login_impl)
+    login = _login_impl  # type: ignore[assignment]
 
 
 @router.post("/refresh", response_model=TokenResponse)
