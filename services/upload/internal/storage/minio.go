@@ -88,3 +88,27 @@ func (m *MinioClient) StatObject(ctx context.Context, key string) error {
 	}
 	return nil
 }
+
+func (m *MinioClient) StatObjectSize(ctx context.Context, key string) (int64, error) {
+	info, err := m.client.StatObject(ctx, m.bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("stat %s: %w", key, err)
+	}
+	return info.Size, nil
+}
+
+func (m *MinioClient) GetObject(ctx context.Context, key string) (io.ReadCloser, error) {
+	obj, err := m.client.GetObject(ctx, m.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get %s: %w", key, err)
+	}
+	return obj, nil
+}
+
+func (m *MinioClient) RemoveObject(ctx context.Context, key string) error {
+	err := m.client.RemoveObject(ctx, m.bucket, key, minio.RemoveObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("remove %s: %w", key, err)
+	}
+	return nil
+}

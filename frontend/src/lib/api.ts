@@ -155,6 +155,78 @@ export async function completeVideo(videoId: string): Promise<Video> {
   return request<Video>(`/api/v1/videos/${videoId}/complete`, { method: "POST" });
 }
 
+// Backlog Content-Range resumable fallback — gateway proxies to upload service
+export async function getResumableOffset(videoId: string): Promise<number> {
+  const data = await request<{ uploaded: number }>(`/api/v1/videos/${videoId}/resumable`);
+  return data.uploaded ?? 0;
+}
+
+function putResumableChunk(
+  videoId: string,
+  chunk: Blob,
+  start: number,
+  end: number,
+  total: number,
+  contentType: string,
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
+): Promise<{ uploaded: number; status: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const url = `${base()}/api/v1/videos/${videoId}/resumable`;
+    xhr.open("PUT", url);
+    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.setRequestHeader("Content-Range", `bytes ${start}-${end}/${total}`);
+    if (contentType) xhr.setRequestHeader("Content-Type", contentType);
+    if (signal?.aborted) {
+      reject(new DOMException("aborted", "AbortError"));
+      return;
+    }
+    signal?.addEventListener("abort", () => xhr.abort());
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        const base = (start / total) * 100;
+        const chunkPct = (e.loaded / e.total) * ((end - start + 1) / total) * 100;
+        onProgress(Math.round(base + chunkPct));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status === 308 || (xhr.status >= 200 && xhr.status < 300)) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          resolve({ uploaded: end + 1, status: "resume" });
+        }
+      } else {
+        reject(new Error(`resumable PUT failed: ${xhr.status} ${xhr.responseText}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("network error during resumable PUT"));
+    xhr.onabort = () => reject(new DOMException("aborted", "AbortError"));
+    xhr.send(chunk);
+  });
+}
+
+export async function uploadResumable(
+  videoId: string,
+  file: File,
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const total = file.size;
+  let offset = 0;
+  try {
+    offset = await getResumableOffset(videoId);
+  } catch {}
+  // if offset >0, resume from there; else from 0
+  if (offset > total) offset = 0;
+  const chunkSize = total - offset; // single chunk for simplicity; could split into 5MB pieces
+  if (chunkSize <= 0) return;
+  const chunk = file.slice(offset, offset + chunkSize);
+  await putResumableChunk(videoId, chunk, offset, offset + chunkSize - 1, total, file.type || "video/mp4", onProgress, signal);
+}
+
 function putToPresignedUrl(
   url: string,
   file: File,
@@ -231,7 +303,16 @@ export async function uploadVideo(
         if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
       }
     }
-    if (lastErr) throw lastErr;
+    if (lastErr) {
+      // Backlog Content-Range fallback: try resumable via gateway before giving up
+      try {
+        await uploadResumable(presign.video_id, file, onProgress, signal);
+        const video = await completeVideo(presign.video_id);
+        if (typeof window !== "undefined") localStorage.removeItem(storageKey);
+        return video;
+      } catch {}
+      throw lastErr;
+    }
     const video = await completeVideo(presign.video_id);
     if (typeof window !== "undefined") localStorage.removeItem(storageKey);
     return video;
@@ -240,6 +321,7 @@ export async function uploadVideo(
     if (file.size < 100 * 1024 * 1024) {
       return uploadViaGateway(file, title, description, onProgress);
     }
+    // last resort: if we already have a presign, try resumable again
     throw e instanceof Error ? e : new Error(String(e));
   }
 }
