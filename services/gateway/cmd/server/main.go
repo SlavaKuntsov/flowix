@@ -120,8 +120,6 @@ func main() {
 	// --- Resumable Content-Range fallback (backlog) ---
 	r.With(authMw).Get("/api/v1/videos/{id}/resumable", uploadProxy.ServeHTTP)
 	r.With(authMw).Put("/api/v1/videos/{id}/resumable", uploadProxy.ServeHTTP)
-	r.With(authMw).Get("/api/v1/videos/*/resumable", uploadProxy.ServeHTTP)
-	r.With(authMw).Put("/api/v1/videos/*/resumable", uploadProxy.ServeHTTP)
 
 	// --- HLS token for private videos (signed URL 1h) — must be before generic /videos/* proxy ---
 	r.With(authMw).Get("/api/v1/videos/{id}/hls-token", gwmw.HLSTokenHandler(jwtSecret, internalToken, metadataURL))
