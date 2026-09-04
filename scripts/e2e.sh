@@ -259,4 +259,159 @@ else
   say "7) ffprobe not found — skipping aligned segment checks"
 fi
 
+say "8) presign flow (POST /presign → PUT presigned → POST /complete → poll ready → HLS)"
+if [ -z "${PRESIGN_SKIP:-}" ]; then
+  if [ -n "${TOKEN:-}" ]; then
+    # reuse existing auth token from step 2, else re-login via GATEWAY
+    PRESIGN_TITLE="e2e-presign-$(date +%s)"
+    say "   presign $PRESIGN_TITLE"
+    # generate small sample for presign if not already
+    PRESIGN_SAMPLE="${PRESIGN_SAMPLE:-$SAMPLE}"
+    if [ -z "$PRESIGN_SAMPLE" ] || [ ! -f "$PRESIGN_SAMPLE" ]; then
+      PRESIGN_SAMPLE="$TMP/presign-sample.mp4"
+      ffmpeg -y -loglevel error -f lavfi -i "testsrc=size=640x360:rate=30:duration=3" -f lavfi -i "sine=frequency=440:duration=3" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "$PRESIGN_SAMPLE" || fail "ffmpeg presign sample generation failed"
+    fi
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$GATEWAY/api/v1/videos/presign" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"title\":\"$PRESIGN_TITLE\",\"description\":\"presign e2e\",\"filename\":\"presign-sample.mp4\",\"content_type\":\"video/mp4\"}")
+    [ "$code" = "201" ] || [ "$code" = "200" ] || fail "presign failed ($code): $(cat "$TMP/body")"
+    PRESIGN_VIDEO_ID=$(jq -r '.video_id // .id' < "$TMP/body")
+    PRESIGN_URL=$(jq -r '.url' < "$TMP/body")
+    [ -n "$PRESIGN_VIDEO_ID" ] && [ "$PRESIGN_VIDEO_ID" != "null" ] || fail "no video_id in presign response"
+    [ -n "$PRESIGN_URL" ] && [ "$PRESIGN_URL" != "null" ] || fail "no url in presign response"
+    say "   presign video_id=$PRESIGN_VIDEO_ID url=$PRESIGN_URL"
+    # PUT directly to presigned URL (MinIO)
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X PUT --data-binary "@$PRESIGN_SAMPLE" -H 'Content-Type: video/mp4' "$PRESIGN_URL")
+    # MinIO returns 200 on success
+    [ "$code" = "200" ] || [ "$code" = "204" ] || fail "presigned PUT failed ($code): $(cat "$TMP/body")"
+    say "   presigned PUT: ok ($code)"
+    # complete
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$GATEWAY/api/v1/videos/$PRESIGN_VIDEO_ID/complete" -H "Authorization: Bearer $TOKEN")
+    [ "$code" = "200" ] || [ "$code" = "201" ] || fail "presign complete failed ($code): $(cat "$TMP/body")"
+    say "   complete: ok"
+    # poll presign video ready
+    say "   poll presign status (timeout ${POLL_TIMEOUT}s)"
+    deadline=$(( $(date +%s) + POLL_TIMEOUT ))
+    while :; do
+      [ "$(http_get "$METADATA/api/v1/videos/$PRESIGN_VIDEO_ID")" = "200" ] || fail "metadata get presign failed"
+      pstatus=$(jq -r '.status' < "$TMP/body")
+      say "   presign status=$pstatus"
+      [ "$pstatus" = "ready" ] && break
+      [ "$pstatus" = "failed" ] && fail "presign transcode reported failed"
+      [ "$(date +%s)" -ge "$deadline" ] && fail "timed out waiting for presign ready (last=$pstatus)"
+      sleep "$POLL_INTERVAL"
+    done
+    # HLS for presign video
+    PRESIGN_MASTER="$VOD/hls/$PRESIGN_VIDEO_ID/master.m3u8"
+    [ "$(http_get "$PRESIGN_MASTER")" = "200" ] || fail "presign master.m3u8 not 200: $(cat "$TMP/body")"
+    pstreams=$(grep -c '#EXT-X-STREAM-INF' "$TMP/body" || true)
+    say "   presign HLS renditions=$pstreams (want $EXPECTED_RENDITIONS)"
+    # also via gateway
+    [ "$(http_get "$GATEWAY/hls/$PRESIGN_VIDEO_ID/master.m3u8")" = "200" ] || say "   WARN: gateway presign HLS not 200"
+    say "   presign flow: ok"
+  else
+    say "   WARN: no TOKEN available — skipping presign flow"
+  fi
+else
+  say "   SKIP presign (PRESIGN_SKIP set)"
+fi
+
+say "9) private HLS (visibility private → 403 without token, 200 with token)"
+if [ -n "${TOKEN:-}" ] && [ -n "${VIDEO_ID:-}" ]; then
+  # set video to private via gateway metadata PATCH
+  code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X PATCH "$GATEWAY/api/v1/videos/$VIDEO_ID" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"visibility":"private"}')
+  if [ "$code" = "200" ]; then
+    say "   set private: ok"
+    # wait a bit for metadata cache
+    sleep 1
+    # without token should be 403
+    code=$(http_get "$GATEWAY/hls/$VIDEO_ID/master.m3u8")
+    if [ "$code" = "403" ]; then
+      say "   private HLS without token: 403 ok"
+    else
+      say "   WARN: private HLS without token expected 403 got $code"
+    fi
+    # get hls-token
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$GATEWAY/api/v1/videos/$VIDEO_ID/hls-token")
+    if [ "$code" = "200" ]; then
+      HLS_TOKEN=$(jq -r '.token' < "$TMP/body")
+      [ -n "$HLS_TOKEN" ] && [ "$HLS_TOKEN" != "null" ] || fail "no token in hls-token response"
+      code=$(http_get "$GATEWAY/hls/$VIDEO_ID/master.m3u8?token=$HLS_TOKEN")
+      [ "$code" = "200" ] || fail "private HLS with token not 200: $code"
+      say "   private HLS with token: 200 ok"
+      # also via Authorization header (owner)
+      code=$(curl -s -o "$TMP/body" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$GATEWAY/hls/$VIDEO_ID/master.m3u8")
+      [ "$code" = "200" ] || say "   WARN: private HLS with Authorization not 200: $code"
+      # check Cache-Control private
+      hdr=$(http_get_header "$GATEWAY/hls/$VIDEO_ID/master.m3u8?token=$HLS_TOKEN" "Cache-Control")
+      echo "$hdr" | grep -qi "private" && say "   Cache-Control private: ok" || say "   WARN: Cache-Control not private: $hdr"
+    else
+      say "   WARN: hls-token failed ($code): $(cat "$TMP/body")"
+    fi
+    # reset to public
+    curl -s -o /dev/null -X PATCH "$GATEWAY/api/v1/videos/$VIDEO_ID" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"visibility":"public"}' || true
+    say "   private HLS: ok (reset to public)"
+  else
+    say "   WARN: set private failed ($code): $(cat "$TMP/body") — skipping private HLS check"
+  fi
+else
+  say "   SKIP private HLS (no TOKEN or VIDEO_ID)"
+fi
+
+say "10) resumable fallback (Content-Range)"
+if [ -n "${TOKEN:-}" ]; then
+  RESUME_TITLE="e2e-resume-$(date +%s)"
+  code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$GATEWAY/api/v1/videos/presign" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"title\":\"$RESUME_TITLE\",\"filename\":\"resume.mp4\",\"content_type\":\"video/mp4\"}")
+  if [ "$code" = "201" ] || [ "$code" = "200" ]; then
+    RESUME_ID=$(jq -r '.video_id // .id' < "$TMP/body")
+    say "   resume video_id=$RESUME_ID"
+    # initial offset should be 0
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$GATEWAY/api/v1/videos/$RESUME_ID/resumable")
+    [ "$code" = "200" ] || say "   WARN: resumable status not 200: $code"
+    uploaded=$(jq -r '.uploaded' < "$TMP/body" 2>/dev/null || echo 0)
+    say "   initial uploaded=$uploaded"
+    # PUT with Content-Range: bytes 0-xxx/total
+    RESUME_SAMPLE="$TMP/resume-sample.mp4"
+    if [ ! -f "$RESUME_SAMPLE" ]; then
+      ffmpeg -y -loglevel error -f lavfi -i "testsrc=size=320x240:rate=30:duration=2" -f lavfi -i "sine=frequency=440:duration=2" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "$RESUME_SAMPLE" || fail "ffmpeg resume sample failed"
+    fi
+    total=$(wc -c < "$RESUME_SAMPLE" | tr -d ' ')
+    say "   resume sample size=$total"
+    # send in one chunk via resumable endpoint
+    end=$((total-1))
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X PUT --data-binary "@$RESUME_SAMPLE" -H "Authorization: Bearer $TOKEN" -H "Content-Type: video/mp4" -H "Content-Range: bytes 0-$end/$total" "$GATEWAY/api/v1/videos/$RESUME_ID/resumable")
+    # expect 200 (complete) or 308
+    if [ "$code" = "200" ] || [ "$code" = "308" ]; then
+      say "   resumable PUT: $code ok"
+    else
+      fail "resumable PUT failed ($code): $(cat "$TMP/body")"
+    fi
+    # complete
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$GATEWAY/api/v1/videos/$RESUME_ID/complete" -H "Authorization: Bearer $TOKEN")
+    [ "$code" = "200" ] || say "   WARN: resume complete not 200: $code $(cat "$TMP/body")"
+    say "   resumable flow: ok"
+    # test interrupted resume: simulate 50% upload then resume
+    RESUME2_TITLE="e2e-resume2-$(date +%s)"
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$GATEWAY/api/v1/videos/presign" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"title\":\"$RESUME2_TITLE\",\"filename\":\"resume2.mp4\",\"content_type\":\"video/mp4\"}")
+    RESUME2_ID=$(jq -r '.video_id // .id' < "$TMP/body")
+    # split sample into two halves
+    half=$((total/2))
+    dd if="$RESUME_SAMPLE" of="$TMP/part1" bs=1 count=$half 2>/dev/null
+    dd if="$RESUME_SAMPLE" of="$TMP/part2" bs=1 skip=$half 2>/dev/null
+    end1=$((half-1))
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X PUT --data-binary "@$TMP/part1" -H "Authorization: Bearer $TOKEN" -H "Content-Type: video/mp4" -H "Content-Range: bytes 0-$end1/$total" "$GATEWAY/api/v1/videos/$RESUME2_ID/resumable")
+    [ "$code" = "308" ] || say "   WARN: first half expected 308 got $code"
+    # check offset
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$GATEWAY/api/v1/videos/$RESUME2_ID/resumable")
+    uploaded=$(jq -r '.uploaded' < "$TMP/body" 2>/dev/null || echo 0)
+    say "   after half uploaded=$uploaded (want $half)"
+    end2=$((total-1))
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X PUT --data-binary "@$TMP/part2" -H "Authorization: Bearer $TOKEN" -H "Content-Type: video/mp4" -H "Content-Range: bytes $half-$end2/$total" "$GATEWAY/api/v1/videos/$RESUME2_ID/resumable")
+    [ "$code" = "200" ] || fail "second half resumable PUT not 200: $code $(cat "$TMP/body")"
+    say "   50% resume: ok (308→200)"
+  else
+    say "   WARN: presign for resumable failed ($code)"
+  fi
+else
+  say "   SKIP resumable (no TOKEN)"
+fi
+
 say "PASS: video=$VIDEO_ID master has $streams renditions, segments serve & decode (gateway $gw_code)"

@@ -84,6 +84,7 @@ func main() {
 	metaCl := client.NewMetadataClient(metadataURL)
 	uh := handler.NewUploadHandler(store, pub, metaCl)
 	ph := handler.NewPresignHandler(store, pub, metaCl)
+	rh := handler.NewResumableHandler(store)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.Recoverer, mw.RequestLogger)
@@ -104,6 +105,8 @@ func main() {
 		r.Post("/api/v1/videos/presign", ph.Presign)
 		r.Post("/api/v1/videos/{id}/complete", ph.Complete)
 		r.Post("/api/v1/videos/complete", ph.Complete)
+		r.Get("/api/v1/videos/{id}/resumable", rh.Status)
+		r.Put("/api/v1/videos/{id}/resumable", rh.Upload)
 	})
 
 	logger.Info().Str("port", port).Str("bucket", bucket).Str("metadata", metadataURL).Msg("upload starting")

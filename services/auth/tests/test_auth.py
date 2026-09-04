@@ -39,6 +39,17 @@ def client_with_mock(mock_db):
 
 def clear_overrides():
     app.dependency_overrides.clear()
+    # reset rate-limit storage to avoid cross-test 429
+    try:
+        from src.core.limiter import limiter
+
+        if limiter is not None and hasattr(limiter, "_storage"):
+            try:
+                limiter._storage.reset()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def test_register_success():
@@ -151,3 +162,24 @@ def test_health():
     r = c.get("/health")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+def test_login_rate_limit():
+    u = fake_user(email="ratelimit@example.com", password="secret123")
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=FakeResult(u))
+    c = client_with_mock(mock_db)
+    # reset limiter before test
+    try:
+        from src.core.limiter import limiter as _lim
+
+        if _lim is not None and hasattr(_lim, "_storage"):
+            _lim._storage.reset()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    for _ in range(5):
+        r = c.post("/api/v1/auth/login", json={"email": "ratelimit@example.com", "password": "secret123"})
+        assert r.status_code == 200, r.text
+    r = c.post("/api/v1/auth/login", json={"email": "ratelimit@example.com", "password": "secret123"})
+    assert r.status_code == 429, r.text
+    clear_overrides()

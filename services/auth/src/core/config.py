@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
+    redis_url: str = "redis://redis:6379/0"
 
     class Config:
         env_file = ".env"
