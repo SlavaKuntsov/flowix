@@ -13,10 +13,12 @@ import (
 )
 
 type MinioClient struct {
-	client   *minio.Client
-	bucket   string
-	endpoint string
-	secure   bool
+	client    *minio.Client
+	bucket    string
+	endpoint  string
+	secure    bool
+	accessKey string
+	secretKey string
 }
 
 func NewMinioClient(endpoint, accessKey, secretKey, bucket string, secure bool) (*MinioClient, error) {
@@ -38,7 +40,7 @@ func NewMinioClient(endpoint, accessKey, secretKey, bucket string, secure bool) 
 			log.Info().Str("bucket", bucket).Msg("bucket created")
 		}
 	}
-	return &MinioClient{client: cl, bucket: bucket, endpoint: endpoint, secure: secure}, nil
+	return &MinioClient{client: cl, bucket: bucket, endpoint: endpoint, secure: secure, accessKey: accessKey, secretKey: secretKey}, nil
 }
 
 func (m *MinioClient) PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
@@ -57,27 +59,48 @@ func (m *MinioClient) PresignedPutObject(ctx context.Context, key string, expire
 	return u.String(), nil
 }
 
-// PresignedPutObjectWithURL returns presigned URL rewritten for external access.
-// MinIO generates URL with internal endpoint (e.g., minio:9000); we rewrite to external
-// URL if MINIO_PUBLIC_ENDPOINT is set (browser needs http://localhost:9000).
+// PresignedPutObjectWithURL returns presigned URL for external access.
+// Previously we rewrote host after signing, which broke AWS SigV4 (host is signed).
+// Now we generate the signature with the public host directly if provided.
 func (m *MinioClient) PresignedPutObjectExternal(ctx context.Context, key string, expires time.Duration, publicEndpoint string) (string, error) {
-	uStr, err := m.PresignedPutObject(ctx, key, expires)
-	if err != nil {
-		return "", err
-	}
 	if publicEndpoint == "" {
-		return uStr, nil
-	}
-	u, err := url.Parse(uStr)
-	if err != nil {
-		return uStr, nil
+		return m.PresignedPutObject(ctx, key, expires)
 	}
 	pub, err := url.Parse(publicEndpoint)
+	if err != nil || pub.Host == "" {
+		return m.PresignedPutObject(ctx, key, expires)
+	}
+	// Build a temporary client that signs for the public host.
+	// publicEndpoint may be http://localhost:9000 or https://...
+	pubSecure := pub.Scheme == "https"
+	// minio.New expects endpoint as host:port without scheme
+	pubEndpoint := pub.Host
+	// If pubEndpoint lacks port, minio.New will default to 443/80; keep as is.
+	tmpClient, err := minio.New(pubEndpoint, &minio.Options{
+		Creds:       credentials.NewStaticV4(m.accessKey, m.secretKey, ""),
+		Secure:      pubSecure,
+		Region:      "us-east-1",
+		BucketLookup: minio.BucketLookupPath,
+	})
 	if err != nil {
+		// fallback to rewriting (should not happen)
+		uStr, err2 := m.PresignedPutObject(ctx, key, expires)
+		if err2 != nil {
+			return "", err2
+		}
+		if u, e := url.Parse(uStr); e == nil {
+			u.Scheme = pub.Scheme
+			u.Host = pub.Host
+			return u.String(), nil
+		}
 		return uStr, nil
 	}
-	u.Scheme = pub.Scheme
-	u.Host = pub.Host
+	u, err := tmpClient.PresignedPutObject(ctx, m.bucket, key, expires)
+	if err != nil {
+		return "", fmt.Errorf("presign put %s: %w", key, err)
+	}
+	// Ensure scheme matches publicEndpoint (minio-go uses http/https based on Secure)
+	// tmpClient already uses pubSecure, so scheme is correct.
 	return u.String(), nil
 }
 
