@@ -195,14 +195,23 @@ func (h *VideoHandler) GetVODMapping(w http.ResponseWriter, r *http.Request) {
 	for _, rendition := range rends {
 		// Issue #43: bucket is fully private — nginx-vod fetches MP4s through its
 		// internal /minio/ location with a presigned query (SigV4 host = minio:9000).
-		path := "/" + rendition.S3Key
-		if ps, ok := h.storage.(StoragePresigner); ok {
-			if u, err := ps.PresignGetInternal(r.Context(), rendition.S3Key, presignExpiry); err == nil {
-				if pu, perr := url.Parse(u); perr == nil && pu.RawQuery != "" {
-					path = "/" + rendition.S3Key + "?" + pu.RawQuery
-				}
-			} else {
+		path := ""
+		ps, hasPresigner := h.storage.(StoragePresigner)
+		if !hasPresigner {
+			// no MinIO storage wired (tests/local dev) — unsigned relative key
+			path = "/" + rendition.S3Key
+		} else {
+			u, err := ps.PresignGetInternal(r.Context(), rendition.S3Key, presignExpiry)
+			if err != nil {
+				// unsigned path would 403 at MinIO — fail fast with a clear status
 				slog.Error("rendition presign failed", "error", err, "key", rendition.S3Key)
+				writeError(w, r, http.StatusBadGateway, "presign failed")
+				return
+			}
+			if pu, perr := url.Parse(u); perr == nil && pu.RawQuery != "" {
+				path = "/" + rendition.S3Key + "?" + pu.RawQuery
+			} else {
+				path = "/" + rendition.S3Key
 			}
 		}
 		mapping.Sequences = append(mapping.Sequences, vodSequence{Clips: []vodClip{{
