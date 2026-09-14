@@ -6,19 +6,21 @@
 #   Phase-5 only:            VIDEO_ID=<id> ./scripts/e2e.sh   # skip upload, assert HLS for a ready video.
 #
 # Endpoints (override via env):
-#   AUTH, UPLOAD, METADATA, VOD, GATEWAY
-#   VOD defaults to :8081 (nginx-vod direct), GATEWAY defaults to :8080.
+#   AUTH, UPLOAD, METADATA, GATEWAY
+#   HLS assertions go through the gateway (:8080) — since issue #43 nginx-vod :8081
+#   is not published; the gateway /hls/* proxy (HLSAuth) is the only playback path.
 #
 #   make up            # bring the stack up first
 #   make e2e           # or: bash scripts/e2e.sh
-#   VOD=http://localhost:8081 GATEWAY=http://localhost:8080 bash scripts/e2e.sh
+#   GATEWAY=http://localhost:8080 bash scripts/e2e.sh
 set -euo pipefail
 
 AUTH=${AUTH:-http://localhost:8001}
 UPLOAD=${UPLOAD:-http://localhost:8003}
 METADATA=${METADATA:-http://localhost:8002}
-VOD=${VOD:-http://localhost:8081}
 GATEWAY=${GATEWAY:-http://localhost:8080}
+# VOD legacy override kept for back-compat; default = gateway (nginx-vod is internal now)
+VOD=${VOD:-$GATEWAY}
 
 EMAIL=${EMAIL:-user@example.com}
 PASSWORD=${PASSWORD:-string}
@@ -70,12 +72,10 @@ resolve_url() {
 need curl
 need jq
 
-say "endpoints: auth=$AUTH upload=$UPLOAD metadata=$METADATA vod=$VOD gateway=$GATEWAY"
+say "endpoints: auth=$AUTH upload=$UPLOAD metadata=$METADATA gateway=$GATEWAY"
 
 # ── 1. health ─────────────────────────────────────────────────────────────
 say "1) health"
-[ "$(http_get "$VOD/health")" = "200" ] || fail "nginx-vod not healthy at $VOD/health"
-say "   nginx-vod: ok"
 [ "$(http_get "$GATEWAY/health")" = "200" ] || fail "gateway not healthy at $GATEWAY/health"
 say "   gateway: ok"
 if [ -z "$VIDEO_ID" ]; then

@@ -66,9 +66,11 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-*}
+    # Issue #43: loopback-only publication — reachable for browser presigned PUT/GET
+    # (MINIO_PUBLIC_ENDPOINT), not exposed on external interfaces. Bucket is fully private.
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - miniodata:/data
     healthcheck:
@@ -85,11 +87,11 @@ services:
       /bin/sh -c "
       /usr/bin/mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
       /usr/bin/mc mb -p local/$${VIDEO_STORAGE_BUCKET:-videos} || true &&
+      # Issue #43: whole bucket private — no anonymous reads. nginx-vod fetches renditions
+      # via presigned URLs from metadata /internal/videos/{id}/vod; browser gets presigned
+      # thumbnail_url from metadata; uploads use presigned PUT.
       /usr/bin/mc anonymous set private local/$${VIDEO_STORAGE_BUCKET:-videos} || true &&
-      /usr/bin/mc anonymous set download local/$${VIDEO_STORAGE_BUCKET:-videos}/renditions || true &&
-      /usr/bin/mc anonymous set download local/$${VIDEO_STORAGE_BUCKET:-videos}/thumbnails || true &&
-      /usr/bin/mc anonymous set private local/$${VIDEO_STORAGE_BUCKET:-videos}/raw || true &&
-      echo '[minio-setup] bucket policy: private + renditions/thumbnails download, raw private' &&
+      echo '[minio-setup] bucket policy: fully private (issue #43)' &&
       (/usr/bin/mc ilm rule add local/$${VIDEO_STORAGE_BUCKET:-videos} --expire-days '7' --prefix 'raw/' 2>/dev/null && echo '[minio-setup] ilm raw 7d added (rule)') || (/usr/bin/mc ilm add local/$${VIDEO_STORAGE_BUCKET:-videos} --expiry-days '7' --prefix 'raw/' 2>/dev/null && echo '[minio-setup] ilm raw 7d added (legacy)') || echo '[minio-setup] ilm raw already exists or skipped' &&
       /usr/bin/mc ilm ls local/$${VIDEO_STORAGE_BUCKET:-videos} 2>/dev/null | head -n 20 || true &&
       exit 0
@@ -135,8 +137,7 @@ services:
         condition: service_healthy
       metadata:
         condition: service_healthy
-    ports:
-      - "${NGINX_VOD_PORT:-8081}:80"
+    # Issue #43: no published port — HLS is served only via gateway /hls/* (HLSAuth)
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/health | grep -q ok || curl -f http://127.0.0.1:80/health"]
       interval: 10s
@@ -189,6 +190,8 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_SECURE: "false"
       VIDEO_STORAGE_BUCKET: ${VIDEO_STORAGE_BUCKET:-videos}
+      # Issue #43: host for presigned thumbnail URLs handed to browsers (loopback-published MinIO)
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
     ports:
       - "${METADATA_PORT:-8002}:8002"
     depends_on:
