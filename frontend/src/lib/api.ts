@@ -51,7 +51,8 @@ export interface Video {
 export function getThumbnailUrl(video: Video): string | null {
   if (video.thumbnail_url) {
     const b = hlsBase();
-    // thumbnail_url is like /thumbnails/{id}/thumb.jpg (gateway)
+    // since issue #43 thumbnail_url is a presigned absolute URL (MinIO loopback);
+    // legacy relative paths (gateway) kept as fallback
     if (video.thumbnail_url.startsWith("/")) return `${b}${video.thumbnail_url}`;
     return video.thumbnail_url;
   }

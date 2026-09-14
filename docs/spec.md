@@ -121,7 +121,7 @@ docker-compose up --build
 ```
 
 This will start:
-- MinIO on `:9000` (API) and `:9001` (console)
+- MinIO on `:9000` (API) and `:9001` (console) — published loopback-only (issue #43), bucket fully private: reads via presigned URLs or gateway proxies
 - PostgreSQL on `:5432`
 - RabbitMQ on `:5672` (and management UI on `:15672`)
 - All microservices

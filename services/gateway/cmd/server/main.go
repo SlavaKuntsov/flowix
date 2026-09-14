@@ -57,16 +57,11 @@ func main() {
 	metadataTarget := mustParseURL(metadataURL)
 	uploadTarget := mustParseURL(uploadURL)
 	vodTarget := mustParseURL(vodURL)
-	bucket := envOr("VIDEO_STORAGE_BUCKET", "videos")
-	minioURL := envOr("MINIO_URL", "http://minio:9000/"+bucket)
-	minioTarget := mustParseURL(minioURL)
 
 	authProxy := proxy.New(authTarget)
 	metadataProxy := proxy.New(metadataTarget)
 	uploadProxy := proxy.New(uploadTarget)
 	vodProxy := proxy.New(vodTarget)
-	// thumbnails/renditions are stored in MinIO bucket `videos`; gateway exposes /thumbnails/* via MinIO
-	minioProxy := proxy.New(minioTarget)
 
 	r := chi.NewRouter()
 	// базовые chi middleware
@@ -140,10 +135,9 @@ func main() {
 	hlsAuth := gwmw.HLSAuth(jwtSecret, internalToken, metadataURL)
 	r.With(hlsAuth, metrics.Middleware).Handle("/hls/*", vodProxy)
 
-	// --- Thumbnails / public MinIO objects via gateway (avoid direct :9000 CORS) ---
-	// frontend uses /thumbnails/{id}/thumb.jpg ; gateway proxies to MinIO bucket `videos`
-	r.Handle("/thumbnails/*", minioProxy)
-	r.Handle("/thumbnails", minioProxy)
+	// Thumbnails: since issue #43 the MinIO bucket is fully private — metadata returns
+	// presigned absolute thumbnail_url (MINIO_PUBLIC_ENDPOINT); the old anonymous
+	// /thumbnails/* MinIO proxy is removed.
 
 	// Inject X-Internal-Token for internal downstream calls (metadata internal/*, nginx vod mapping)
 	if internalToken != "" {

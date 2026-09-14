@@ -14,7 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Header />
         <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>
         <footer className="mx-auto max-w-6xl px-4 py-8 text-center text-xs text-zinc-400">
-          Flowix — open-source HLS • gateway :8080 • vod :8081
+          Flowix — open-source HLS • gateway :8080
         </footer>
       </body>
     </html>

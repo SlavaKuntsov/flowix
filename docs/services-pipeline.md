@@ -23,7 +23,7 @@ Flowix — MVP видеоплатформы с адаптивным стрими
 | **metadata** | Go + `chi` | `:8002` | CRUD видео: `GET/POST /api/v1/videos`, `GET/PATCH/DELETE /api/v1/videos/:id`. Внутренний `PATCH /internal/videos/:id/status` для transcoder'а. Валидация, пагинация | `postgres.videos`, `video_renditions` |
 | **upload** | Go + `chi` | `:8003` | Принимает `multipart/form-data` на `POST /api/v1/videos/upload`, льёт оригинал в MinIO `raw/{id}/original.mp4`, создаёт запись `status=uploaded` через metadata, публикует `video.uploaded` в RabbitMQ | MinIO + RabbitMQ + metadata |
 | **transcoder** | Python Celery + FFmpeg | — (воркер) | Слушает `video.uploaded`, качает оригинал, `ffprobe` → 3× FFmpeg параллельно (360p/720p/1080p), льёт `renditions/{id}/{quality}.mp4` в MinIO, `PATCH metadata status=ready`, публикует `video.transcoded`. Тут же делает превью (`-ss 1 -vframes 1`) | MinIO, RabbitMQ, metadata |
-| **streaming (nginx-vod)** | nginx + `kaltura/nginx-vod-module` | `:8081` | Отдаёт HLS/DASH на лету: `GET /hls/{id}/master.m3u8` склеивает 3 MP4 в мастер-манифест, сегменты режет по ключевым кадрам. JIT — храним только MP4, сегменты не прегенерим. `vod_mode mapped; proxy_pass minio:9000` | Читает MinIO |
+| **streaming (nginx-vod)** | nginx + `kaltura/nginx-vod-module` | internal (без публикации порта, issue #43) | Отдаёт HLS/DASH на лету через gateway `/hls/*` (HLSAuth): `GET /hls/{id}/master.m3u8` склеивает 3 MP4 в мастер-манифест, сегменты режет по ключевым кадрам. JIT — храним только MP4, сегменты не прегенерим. `vod_mode mapped`; MP4 читает из MinIO по presigned GET из mapping (`metadata /internal/videos/:id/vod`) | Читает MinIO (presigned) |
 | **frontend** | Next.js 14 + `hls.js` + `zustand` + `tailwind` | `:3000` | Лента `/`, просмотр `/watch/[id]` (`new Hls().loadSource(master.m3u8)` + `playbackRate 0.5–2x`), загрузка `/upload` (multipart + прогресс) | Gateway + HLS |
 | **infra: Postgres** | `postgres:16-alpine` | `:5432` | `users`, `videos (status: uploaded/processing/ready/failed)`, `video_renditions` — см. `deploy/postgres/init.sql:1` | — |
 | **infra: MinIO** | `minio/minio` | `:9000/:9001` | S3-совместимое хранилище: `raw/` оригиналы, `renditions/` готовые MP4, превью | — |
@@ -79,8 +79,8 @@ Flowix — MVP видеоплатформы с адаптивным стрими
                                         ▼
    ┌──────────┐  GET /hls/{id}/master.m3u8
    │  nginx   │◄── frontend hls.js (через gateway /hls/*)
-   │  -vod    │  ──► vod_mode mapped → proxy_pass minio:9000
-   │  :8081   │  склеивает 3 MP4 → HLS манифест + сегменты .m4s
+   │  -vod    │  ──► vod_mode mapped → minio:9000 (presigned GET из mapping)
+   │ internal │  склеивает 3 MP4 → HLS манифест + сегменты .m4s
    └──────────┘
         │
         ▼
@@ -158,7 +158,7 @@ scripts/e2e.sh                    — upload→ready→master.m3u8→ffprobe→g
 
 - **Загрузка падает**: проверь `upload` логи, MinIO `:9001`, RabbitMQ `:15672` очереди, `metadata` — создалась ли запись `uploaded`.
 - **Транскодер не берёт задачу**: `make dev-transcoder` логи, `RABBITMQ_URL` в `.env`, FFmpeg установлен (`ffmpeg -version`), права MinIO.
-- **HLS 404 / нет сегментов**: `curl :8081/hls/{id}/master.m3u8` должен вернуть `EXT-X-STREAM-INF` ×3. Проверь `renditions/` в MinIO и `nginx.conf` `vod_upstream_location`.
+- **HLS 404 / нет сегментов**: `curl :8080/hls/{id}/master.m3u8` (gateway, issue #43 — nginx-vod без публикации порта) должен вернуть `EXT-X-STREAM-INF` ×3. Проверь `renditions/` в MinIO, `nginx.conf` `vod_upstream_location` и presign в `metadata /internal/videos/:id/vod`.
 - **Gateway 502**: сервис за ним не поднят — `make ps`, `make logs`.
 
 См. также `scripts/e2e.sh` — прогоняет `upload → poll ready → curl master.m3u8 → ffprobe aligned segments (EXTINF cross-check, h264) → gateway /hls` (фаза 8). Prod-пайплайн — `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml up --build -d` (CDN `Cache-Control` для manifests/segments).

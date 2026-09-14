@@ -1,5 +1,14 @@
 # Metadata Service (Go chi)
 
+## Presigned reads (issue #43 — bucket fully private)
+
+MinIO-бакет полностью приватный (анонимные чтения → 403), поэтому metadata раздаёт presigned GET:
+
+- `GET /internal/videos/{id}/vod` — nginx-vod получает mapping с presigned путями к MP4 (SigV4 под внутренний хост `minio:9000`; `MINIO_ENDPOINT`).
+- `GET /api/v1/videos`, `GET /api/v1/videos/{id}` (и Create/Update ответы) — `thumbnail_url` заменяется на presigned абсолютный URL под публичный хост (`MINIO_PUBLIC_ENDPOINT`, по умолчанию `http://localhost:9000` — порт MinIO опубликован только на loopback).
+
+TTL presign — 7 дней (лимит SigV4), заметно выше любого кэша mapping/thumbnail.
+
 ## Запуск
 ```bash
 # Через OrbStack (рекомендуется — Go 1.27 в образе)

@@ -6,19 +6,21 @@
 #   Phase-5 only:            VIDEO_ID=<id> ./scripts/e2e.sh   # skip upload, assert HLS for a ready video.
 #
 # Endpoints (override via env):
-#   AUTH, UPLOAD, METADATA, VOD, GATEWAY
-#   VOD defaults to :8081 (nginx-vod direct), GATEWAY defaults to :8080.
+#   AUTH, UPLOAD, METADATA, GATEWAY
+#   HLS assertions go through the gateway (:8080) — since issue #43 nginx-vod :8081
+#   is not published; the gateway /hls/* proxy (HLSAuth) is the only playback path.
 #
 #   make up            # bring the stack up first
 #   make e2e           # or: bash scripts/e2e.sh
-#   VOD=http://localhost:8081 GATEWAY=http://localhost:8080 bash scripts/e2e.sh
+#   GATEWAY=http://localhost:8080 bash scripts/e2e.sh
 set -euo pipefail
 
 AUTH=${AUTH:-http://localhost:8001}
 UPLOAD=${UPLOAD:-http://localhost:8003}
 METADATA=${METADATA:-http://localhost:8002}
-VOD=${VOD:-http://localhost:8081}
 GATEWAY=${GATEWAY:-http://localhost:8080}
+# VOD legacy override kept for back-compat; default = gateway (nginx-vod is internal now)
+VOD=${VOD:-$GATEWAY}
 
 EMAIL=${EMAIL:-user@example.com}
 PASSWORD=${PASSWORD:-string}
@@ -70,12 +72,10 @@ resolve_url() {
 need curl
 need jq
 
-say "endpoints: auth=$AUTH upload=$UPLOAD metadata=$METADATA vod=$VOD gateway=$GATEWAY"
+say "endpoints: auth=$AUTH upload=$UPLOAD metadata=$METADATA gateway=$GATEWAY"
 
 # ── 1. health ─────────────────────────────────────────────────────────────
 say "1) health"
-[ "$(http_get "$VOD/health")" = "200" ] || fail "nginx-vod not healthy at $VOD/health"
-say "   nginx-vod: ok"
 [ "$(http_get "$GATEWAY/health")" = "200" ] || fail "gateway not healthy at $GATEWAY/health"
 say "   gateway: ok"
 if [ -z "$VIDEO_ID" ]; then
@@ -153,7 +153,7 @@ fi
 
 # ── 5. HLS assertions (Phase 5/8 acceptance) ───────────────────────────────
 MASTER_URL="$VOD/hls/$VIDEO_ID/master.m3u8"
-say "5) HLS master (direct VOD): $MASTER_URL"
+say "5) HLS master (via gateway): $MASTER_URL"
 [ "$(http_get "$MASTER_URL")" = "200" ] || fail "master.m3u8 not 200: $(cat "$TMP/body")"
 cp "$TMP/body" "$TMP/master.m3u8"
 cat "$TMP/master.m3u8" | head -20 | sed 's/^/   | /'
@@ -257,6 +257,25 @@ if command -v ffprobe >/dev/null 2>&1; then
   done
 else
   say "7) ffprobe not found — skipping aligned segment checks"
+fi
+
+# ── 7b. data-plane privacy (issue #43) ─────────────────────────────────────
+say "7b) data-plane privacy (issue #43)"
+MINIO=${MINIO:-http://localhost:9000}
+rend_key=$(curl -s "$METADATA/api/v1/videos/$VIDEO_ID" | jq -r '.renditions[0].s3_key // empty')
+if [ -n "$rend_key" ]; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$MINIO/videos/$rend_key")
+  [ "$code" = "403" ] || fail "anonymous MinIO GET of rendition returned $code (want 403 — bucket must be fully private)"
+  say "   anonymous MinIO rendition GET: 403 ok"
+else
+  say "   WARN: no rendition s3_key from metadata — skipping MinIO 403 check"
+fi
+if [ "$VOD" = "$GATEWAY" ]; then
+  # curl exits non-zero on connection refused/unreachable — that is the expected state
+  if code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://localhost:8081/health" 2>/dev/null); then
+    fail "nginx-vod :8081 is reachable from outside (code=$code) — must be internal-only"
+  fi
+  say "   nginx-vod :8081 external access: closed ok"
 fi
 
 say "8) presign flow (POST /presign → PUT presigned → POST /complete → poll ready → HLS)"
