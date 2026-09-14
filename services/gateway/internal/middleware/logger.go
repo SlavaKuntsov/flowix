@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -13,6 +14,19 @@ import (
 func RequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		// chi RequestID кладёт id только в context, не в r.Header и не
+		// в response. Прокидываем в header до обработки, чтобы proxy.New
+		// передал его во все апстримы, и в response — чтобы клиент мог
+		// скопировать id для поиска в Grafana.
+		reqID := chimw.GetReqID(r.Context())
+		if reqID == "" {
+			reqID = r.Header.Get("X-Request-ID")
+		}
+		if reqID != "" {
+			r.Header.Set("X-Request-ID", reqID)
+			w.Header().Set("X-Request-Id", reqID)
+		}
+
 		ww := &respWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(ww, r)
 		dur := time.Since(start)
@@ -22,10 +36,6 @@ func RequestLogger(next http.Handler) http.Handler {
 			ev = log.Error()
 		} else if ww.status >= 400 {
 			ev = log.Warn()
-		}
-		reqID := r.Header.Get("X-Request-ID")
-		if reqID == "" {
-			reqID = r.Header.Get("X-Request-Id")
 		}
 		ev.Str("method", r.Method).
 			Str("path", r.URL.Path).
