@@ -55,3 +55,24 @@ func TestProxyErrorHandler(t *testing.T) {
 		t.Fatalf("want 502 got %d body %s", w.Code, w.Body.String())
 	}
 }
+
+func TestProxyStripsUpstreamRequestID(t *testing.T) {
+	// gateway сам выставляет X-Request-Id до проксирования — upstream-копию
+	// нужно снять, чтобы клиент не получил заголовок дважды
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "upstream-id")
+		w.WriteHeader(200)
+	}))
+	defer backend.Close()
+
+	u, _ := url.Parse(backend.URL)
+	p := New(u)
+	req := httptest.NewRequest("GET", "/api/v1/videos", nil)
+	req.Header.Set("X-Request-ID", "gateway-id")
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, req)
+
+	if got := w.Header().Values("X-Request-Id"); len(got) != 0 {
+		t.Fatalf("upstream X-Request-Id not stripped: %v", got)
+	}
+}

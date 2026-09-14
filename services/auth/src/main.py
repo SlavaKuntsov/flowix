@@ -77,7 +77,6 @@ async def trace_middleware(request: Request, call_next):
         "status": response.status_code,
         "duration": duration,
         "trace_id": trace_id,
-        "request_id": trace_id,
     }
     try:
         _auth_logger.info(json.dumps(log_data))

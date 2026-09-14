@@ -65,6 +65,9 @@ func New(target *url.URL) *httputil.ReverseProxy {
 		resp.Header.Del("Access-Control-Expose-Headers")
 		resp.Header.Del("Access-Control-Max-Age")
 		resp.Header.Del("Vary")
+		// RequestLogger уже выставил X-Request-Id (с тем же значением) —
+		// убираем upstream-копию, иначе клиент получает заголовок дважды.
+		resp.Header.Del("X-Request-Id")
 		return nil
 	}
 	p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
