@@ -30,7 +30,6 @@ scrape_configs:
             msg: msg
             service: service
             trace_id: trace_id
-            request_id: request_id
       - labels:
           level:
           service:
