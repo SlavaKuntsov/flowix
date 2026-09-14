@@ -7,7 +7,7 @@ COMPOSE=docker compose --env-file .env -f deploy/docker-compose.yml
 
 up:
 	$(COMPOSE) up --build -d
-	@echo "infra: postgres :5432, minio :9000/:9001, rabbit :5672/:15672, nginx-vod :8081, gateway :8080, prometheus :9090, grafana :3001, loki :3100, transcoder :8004/metrics"
+	@echo "infra: postgres :5432, minio :9000/:9001, rabbit :5672/:15672, gateway :8080 (hls; nginx-vod internal), prometheus :9090, grafana :3001, loki :3100, transcoder :8004/metrics"
 
 up-frontend:
 	$(COMPOSE) up --build -d frontend

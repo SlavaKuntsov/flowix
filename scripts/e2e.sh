@@ -153,7 +153,7 @@ fi
 
 # ── 5. HLS assertions (Phase 5/8 acceptance) ───────────────────────────────
 MASTER_URL="$VOD/hls/$VIDEO_ID/master.m3u8"
-say "5) HLS master (direct VOD): $MASTER_URL"
+say "5) HLS master (via gateway): $MASTER_URL"
 [ "$(http_get "$MASTER_URL")" = "200" ] || fail "master.m3u8 not 200: $(cat "$TMP/body")"
 cp "$TMP/body" "$TMP/master.m3u8"
 cat "$TMP/master.m3u8" | head -20 | sed 's/^/   | /'
@@ -257,6 +257,25 @@ if command -v ffprobe >/dev/null 2>&1; then
   done
 else
   say "7) ffprobe not found — skipping aligned segment checks"
+fi
+
+# ── 7b. data-plane privacy (issue #43) ─────────────────────────────────────
+say "7b) data-plane privacy (issue #43)"
+MINIO=${MINIO:-http://localhost:9000}
+rend_key=$(curl -s "$METADATA/api/v1/videos/$VIDEO_ID" | jq -r '.renditions[0].s3_key // empty')
+if [ -n "$rend_key" ]; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$MINIO/videos/$rend_key")
+  [ "$code" = "403" ] || fail "anonymous MinIO GET of rendition returned $code (want 403 — bucket must be fully private)"
+  say "   anonymous MinIO rendition GET: 403 ok"
+else
+  say "   WARN: no rendition s3_key from metadata — skipping MinIO 403 check"
+fi
+if [ "$VOD" = "$GATEWAY" ]; then
+  # curl exits non-zero on connection refused/unreachable — that is the expected state
+  if code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://localhost:8081/health" 2>/dev/null); then
+    fail "nginx-vod :8081 is reachable from outside (code=$code) — must be internal-only"
+  fi
+  say "   nginx-vod :8081 external access: closed ok"
 fi
 
 say "8) presign flow (POST /presign → PUT presigned → POST /complete → poll ready → HLS)"
