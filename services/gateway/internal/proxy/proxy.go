@@ -2,10 +2,12 @@
 package proxy
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -72,6 +74,12 @@ func New(target *url.URL) *httputil.ReverseProxy {
 	}
 	p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Error().Err(err).Str("target", target.String()).Str("path", r.URL.Path).Msg("proxy error")
+		// maxBytesMw оборвал копирование тела (MaxBytesReader) — клиенту нужен 413, а не 502
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, `{"error":"file too large (max `+strconv.FormatInt(mbe.Limit, 10)+` bytes)"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		http.Error(w, `{"error":"upstream unavailable"}`, http.StatusBadGateway)
 	}

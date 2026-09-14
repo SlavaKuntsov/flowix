@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -74,5 +76,31 @@ func TestProxyStripsUpstreamRequestID(t *testing.T) {
 
 	if got := w.Header().Values("X-Request-Id"); len(got) != 0 {
 		t.Fatalf("upstream X-Request-Id not stripped: %v", got)
+	}
+}
+
+func TestProxyBodyTooLargeReturns413(t *testing.T) {
+	// maxBytesMw (как в main.go) оборвал тело — ErrorHandler должен отдать 413, а не 502
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(200)
+	}))
+	defer backend.Close()
+
+	u, _ := url.Parse(backend.URL)
+	proxy := New(u)
+	maxBytesMw := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, 16)
+			next.ServeHTTP(w, r)
+		})
+	}
+	body := bytes.Repeat([]byte("a"), 32)
+	req := httptest.NewRequest("PUT", "/api/v1/videos/123/resumable", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	maxBytesMw(http.HandlerFunc(proxy.ServeHTTP)).ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413 got %d body %s", w.Code, w.Body.String())
 	}
 }
