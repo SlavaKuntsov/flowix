@@ -20,6 +20,9 @@ open http://localhost:8003/swagger/doc.json
 
 Команды аналогичны `services/metadata/README.md` — замени `metadata` на `upload`.
 
+## Лимиты
+`UPLOAD_MAX_BYTES` (по умолчанию 5GB) ограничивает тело multipart-загрузки и resumable-путей (`PUT /api/v1/videos/{id}/resumable` — и полный PUT, и суммарный размер объекта по чанкам). Превышение → `413 Request Entity Too Large`. На gateway тот же лимит через `maxBytesMw`.
+
 ## Линт / формат
 ```bash
 make fmt-go

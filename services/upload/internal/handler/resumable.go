@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -101,6 +103,13 @@ func (h *ResumableHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"video_id required"}`, 400)
 		return
 	}
+	maxBytes := int64(5 << 30) // 5GB
+	if v := os.Getenv("UPLOAD_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			maxBytes = n
+		}
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	key := fmt.Sprintf("raw/%s/original.mp4", videoID)
 	cr := r.Header.Get("Content-Range")
 	if cr == "" {
@@ -110,9 +119,13 @@ func (h *ResumableHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		if ct == "" {
 			ct = "video/mp4"
 		}
-		// limit size via ContentLength if available, else read with MaxBytesReader already at gateway
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				http.Error(w, `{"error":"file too large (max `+strconv.FormatInt(maxBytes, 10)+` bytes)"}`, http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, `{"error":"read body"}`, 400)
 			return
 		}
@@ -153,8 +166,17 @@ func (h *ResumableHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if ct == "" {
 		ct = "video/mp4"
 	}
+	if existing+chunkSize > maxBytes {
+		http.Error(w, `{"error":"file too large (max `+strconv.FormatInt(maxBytes, 10)+` bytes)"}`, http.StatusRequestEntityTooLarge)
+		return
+	}
 	chunk, err := io.ReadAll(io.LimitReader(r.Body, chunkSize+1))
 	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, `{"error":"file too large (max `+strconv.FormatInt(maxBytes, 10)+` bytes)"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, `{"error":"read chunk"}`, 400)
 		return
 	}
