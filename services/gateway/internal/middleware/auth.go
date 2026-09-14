@@ -62,6 +62,8 @@ func OptionalAuth(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
+			// клиентский X-User-ID недоверенный — убираем, ставим только после валидации JWT
+			r.Header.Del("X-User-ID")
 			if h == "" || !strings.HasPrefix(h, "Bearer ") {
 				next.ServeHTTP(w, r)
 				return
