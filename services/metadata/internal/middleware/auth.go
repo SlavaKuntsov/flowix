@@ -49,3 +49,10 @@ func UserIDFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(UserIDKey).(string)
 	return v
 }
+
+// UserIDFromHeader returns the gateway-propagated identity (X-User-ID, set by
+// gateway Auth/OptionalAuth after JWT validation). Used on public GET routes
+// that run without metadata-side JWT auth.
+func UserIDFromHeader(r *http.Request) string {
+	return r.Header.Get("X-User-ID")
+}
