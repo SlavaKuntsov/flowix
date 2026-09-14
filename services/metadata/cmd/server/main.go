@@ -114,6 +114,15 @@ func main() {
 	var vh *handler.VideoHandler
 	if minioEndpoint != "" && minioAccess != "" {
 		if store, err := storage.NewMinioClient(minioEndpoint, minioAccess, minioSecret, bucket, secure); err == nil {
+			// Issue #43: presigned thumbnail URLs for browsers must embed the public host
+			publicEndpoint := os.Getenv("MINIO_PUBLIC_ENDPOINT")
+			if publicEndpoint != "" {
+				if err := store.EnablePublicPresign(publicEndpoint, minioAccess, minioSecret, strings.HasPrefix(publicEndpoint, "https://")); err == nil {
+					logger.Info().Str("public_endpoint", publicEndpoint).Msg("metadata public presign enabled")
+				} else {
+					logger.Warn().Err(err).Msg("public presign init failed, thumbnails will use internal endpoint")
+				}
+			}
 			vh = handler.NewVideoHandlerWithStorage(repo, store)
 			logger.Info().Str("bucket", bucket).Msg("metadata MinIO storage enabled for delete")
 		} else {

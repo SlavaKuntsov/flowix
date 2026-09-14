@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"flowix/metadata/internal/middleware"
 	"flowix/metadata/internal/model"
@@ -137,6 +138,27 @@ func testRouter(store VideoStore) chi.Router {
 	r.Get("/api/v1/videos/{id}", vh.Get)
 	r.Patch("/internal/videos/{id}/status", vh.UpdateStatus)
 	r.Get("/internal/videos/{id}", vh.GetInternal)
+	r.Get("/internal/videos/{id}/vod", vh.GetVODMapping)
+	return r
+}
+
+// fakePresigner implements StorageRemover + StoragePresigner (issue #43: private bucket).
+type fakePresigner struct{}
+
+func (fakePresigner) RemoveObjects(_ context.Context, _ []string) {}
+func (fakePresigner) RemovePrefix(_ context.Context, _ string)    {}
+func (fakePresigner) PresignGetInternal(_ context.Context, key string, _ time.Duration) (string, error) {
+	return "http://minio:9000/videos/" + key + "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=internal", nil
+}
+func (fakePresigner) PresignGetPublic(_ context.Context, key string, _ time.Duration) (string, error) {
+	return "http://localhost:9000/videos/" + key + "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=public", nil
+}
+
+func testRouterWithStorage(store VideoStore, s StorageRemover) chi.Router {
+	r := chi.NewRouter()
+	vh := NewVideoHandlerWithStorage(store, s)
+	r.Get("/api/v1/videos", vh.List)
+	r.Get("/api/v1/videos/{id}", vh.Get)
 	r.Get("/internal/videos/{id}/vod", vh.GetVODMapping)
 	return r
 }
@@ -360,5 +382,79 @@ func TestUpdateStatusIdempotencyReadyNotDowngraded(t *testing.T) {
 	}
 	if store.videos["vid-1"].Status != model.StatusFailed {
 		t.Fatalf("ready -> failed should be allowed, got %s", store.videos["vid-1"].Status)
+	}
+}
+
+func readyVideo() *model.Video {
+	return &model.Video{
+		ID: "vid-1", Status: model.StatusReady,
+		Renditions: []model.Rendition{
+			{Quality: "1080p", Bitrate: 5000, S3Key: "renditions/vid-1/1080p.mp4"},
+			{Quality: "360p", Bitrate: 800, S3Key: "renditions/vid-1/360p.mp4"},
+		},
+	}
+}
+
+// Issue #43: with a presigner storage, mapping paths carry a presigned query
+// signed for the internal endpoint (nginx-vod upstream fetch).
+func TestGetVODMappingPresigned(t *testing.T) {
+	store := newFake()
+	store.videos["vid-1"] = readyVideo()
+	r := testRouterWithStorage(store, fakePresigner{})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/internal/videos/vid-1/vod", nil))
+	if w.Code != 200 {
+		t.Fatalf("want 200 got %d: %s", w.Code, w.Body.String())
+	}
+	var got vodMapping
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := "/renditions/vid-1/360p.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=internal"
+	if len(got.Sequences) != 2 || got.Sequences[0].Clips[0].Path != want {
+		t.Fatalf("unexpected presigned mapping: %+v", got)
+	}
+}
+
+// Issue #43: thumbnail_url is a presigned absolute URL (browser-reachable host).
+func TestGetThumbnailPresigned(t *testing.T) {
+	store := newFake()
+	key := "thumbnails/vid-1/thumb.jpg"
+	store.videos["vid-1"] = &model.Video{ID: "vid-1", Status: model.StatusReady, ThumbnailS3Key: &key}
+	r := testRouterWithStorage(store, fakePresigner{})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/videos/vid-1", nil))
+	if w.Code != 200 {
+		t.Fatalf("want 200 got %d: %s", w.Code, w.Body.String())
+	}
+	var v model.Video
+	if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+		t.Fatal(err)
+	}
+	want := "http://localhost:9000/videos/thumbnails/vid-1/thumb.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=public"
+	if v.ThumbnailURL == nil || *v.ThumbnailURL != want {
+		t.Fatalf("unexpected thumbnail_url: %+v", v.ThumbnailURL)
+	}
+}
+
+func TestListThumbnailPresigned(t *testing.T) {
+	store := newFake()
+	key := "thumbnails/vid-1/thumb.jpg"
+	store.videos["vid-1"] = &model.Video{ID: "vid-1", Status: model.StatusReady, ThumbnailS3Key: &key}
+	r := testRouterWithStorage(store, fakePresigner{})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/videos", nil))
+	if w.Code != 200 {
+		t.Fatalf("want 200 got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data []model.Video `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ThumbnailURL == nil ||
+		*resp.Data[0].ThumbnailURL != "http://localhost:9000/videos/thumbnails/vid-1/thumb.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=public" {
+		t.Fatalf("unexpected list thumbnails: %+v", resp.Data)
 	}
 }

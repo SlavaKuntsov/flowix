@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
+	"time"
 
 	"flowix/metadata/internal/middleware"
 	"flowix/metadata/internal/model"
@@ -31,6 +33,17 @@ type StorageRemover interface {
 	RemovePrefix(ctx context.Context, prefix string)
 }
 
+// StoragePresigner generates presigned GET URLs (issue #43: bucket fully private —
+// nginx-vod upstream fetches and browsers need signed reads). Optional capability
+// of the storage implementation, detected via type assertion.
+type StoragePresigner interface {
+	PresignGetInternal(ctx context.Context, key string, expiry time.Duration) (string, error)
+	PresignGetPublic(ctx context.Context, key string, expiry time.Duration) (string, error)
+}
+
+// presignExpiry is the SigV4 presign cap (7 days) — far above any mapping/thumbnail cache TTL.
+const presignExpiry = 168 * time.Hour
+
 type VideoHandler struct {
 	repo    VideoStore
 	storage StorageRemover
@@ -41,6 +54,30 @@ func NewVideoHandler(repo VideoStore) *VideoHandler { return &VideoHandler{repo:
 // NewVideoHandlerWithStorage is used in prod to also clean MinIO.
 func NewVideoHandlerWithStorage(repo VideoStore, s StorageRemover) *VideoHandler {
 	return &VideoHandler{repo: repo, storage: s}
+}
+
+// presignThumbnail replaces the gateway-relative thumbnail_url with a presigned
+// absolute URL (issue #43: MinIO no longer serves thumbnails anonymously).
+func (h *VideoHandler) presignThumbnail(ctx context.Context, v *model.Video) {
+	if h.storage == nil || v == nil || v.ThumbnailS3Key == nil || *v.ThumbnailS3Key == "" {
+		return
+	}
+	ps, ok := h.storage.(StoragePresigner)
+	if !ok {
+		return
+	}
+	u, err := ps.PresignGetPublic(ctx, *v.ThumbnailS3Key, presignExpiry)
+	if err != nil {
+		slog.Warn("thumbnail presign failed", "error", err, "video_id", v.ID)
+		return
+	}
+	v.ThumbnailURL = &u
+}
+
+func (h *VideoHandler) presignThumbnails(ctx context.Context, videos []model.Video) {
+	for i := range videos {
+		h.presignThumbnail(ctx, &videos[i])
+	}
 }
 
 func (h *VideoHandler) Register(r chi.Router) {
@@ -96,6 +133,7 @@ func (h *VideoHandler) Create(w http.ResponseWriter, r *http.Request) {
 			v = upd
 		}
 	}
+	h.presignThumbnail(r.Context(), v)
 	writeJSON(w, r, http.StatusCreated, v)
 }
 
@@ -114,6 +152,7 @@ func (h *VideoHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "not found")
 		return
 	}
+	h.presignThumbnail(r.Context(), v)
 	writeJSON(w, r, http.StatusOK, v)
 }
 
@@ -154,9 +193,21 @@ func (h *VideoHandler) GetVODMapping(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(rends, func(i, j int) bool { return rends[i].Bitrate < rends[j].Bitrate })
 	mapping := vodMapping{Sequences: make([]vodSequence, 0, len(rends))}
 	for _, rendition := range rends {
+		// Issue #43: bucket is fully private — nginx-vod fetches MP4s through its
+		// internal /minio/ location with a presigned query (SigV4 host = minio:9000).
+		path := "/" + rendition.S3Key
+		if ps, ok := h.storage.(StoragePresigner); ok {
+			if u, err := ps.PresignGetInternal(r.Context(), rendition.S3Key, presignExpiry); err == nil {
+				if pu, perr := url.Parse(u); perr == nil && pu.RawQuery != "" {
+					path = "/" + rendition.S3Key + "?" + pu.RawQuery
+				}
+			} else {
+				slog.Error("rendition presign failed", "error", err, "key", rendition.S3Key)
+			}
+		}
 		mapping.Sequences = append(mapping.Sequences, vodSequence{Clips: []vodClip{{
 			Type: "source",
-			Path: "/" + rendition.S3Key,
+			Path: path,
 		}}})
 	}
 	writeJSON(w, r, http.StatusOK, mapping)
@@ -188,6 +239,7 @@ func (h *VideoHandler) List(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []model.Video{}
 	}
+	h.presignThumbnails(r.Context(), list)
 	writeJSON(w, r, http.StatusOK, map[string]interface{}{"data": list, "limit": limit, "offset": offset})
 }
 
@@ -228,6 +280,7 @@ func (h *VideoHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "not found")
 		return
 	}
+	h.presignThumbnail(r.Context(), v)
 	writeJSON(w, r, http.StatusOK, v)
 }
 
