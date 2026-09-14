@@ -58,7 +58,7 @@ func CORS(allowedOrigins []string, allowedMethods []string, allowedHeaders []str
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 			// expose useful headers for hls / upload
-			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Type")
+			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Type, X-Request-Id")
 
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
