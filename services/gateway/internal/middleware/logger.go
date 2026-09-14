@@ -42,9 +42,7 @@ func RequestLogger(next http.Handler) http.Handler {
 			Int("status", ww.status).
 			Dur("duration", dur).
 			Str("ip", clientIP(r)).
-			Str("req_id", reqID).
 			Str("trace_id", reqID).
-			Str("request_id", reqID).
 			Str("service", "gateway").
 			Msg("request")
 		// также zerolog global logger доступен как zerolog.Ctx
