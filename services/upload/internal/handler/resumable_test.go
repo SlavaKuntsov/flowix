@@ -123,3 +123,67 @@ func TestResumableFullPutNoRange(t *testing.T) {
 		t.Fatalf("want 7 got %d", len(st.data["raw/vid1/original.mp4"]))
 	}
 }
+
+func TestResumableFullPutTooLarge(t *testing.T) {
+	t.Setenv("UPLOAD_MAX_BYTES", "16")
+	st := newFakeResumable()
+	h := NewResumableHandler(st)
+	r := newResumableRouter(h)
+	body := bytes.Repeat([]byte("z"), 17)
+	req := httptest.NewRequest("PUT", "/api/v1/videos/vid1/resumable", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413 got %d %s", w.Code, w.Body.String())
+	}
+	if len(st.data) != 0 {
+		t.Fatalf("object must not be stored, got %d keys", len(st.data))
+	}
+}
+
+func TestResumableChunkBodyTooLarge(t *testing.T) {
+	t.Setenv("UPLOAD_MAX_BYTES", "16")
+	st := newFakeResumable()
+	h := NewResumableHandler(st)
+	r := newResumableRouter(h)
+	// объявлен chunkSize=16 (= maxBytes), тело 17 байт → MaxBytesError при чтении
+	body := bytes.Repeat([]byte("a"), 17)
+	req := httptest.NewRequest("PUT", "/api/v1/videos/vid1/resumable", bytes.NewReader(body))
+	req.Header.Set("Content-Range", "bytes 0-15/*")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413 got %d %s", w.Code, w.Body.String())
+	}
+	if len(st.data) != 0 {
+		t.Fatalf("object must not be stored, got %d keys", len(st.data))
+	}
+}
+
+func TestResumableChunkTooLarge(t *testing.T) {
+	t.Setenv("UPLOAD_MAX_BYTES", "16")
+	st := newFakeResumable()
+	h := NewResumableHandler(st)
+	r := newResumableRouter(h)
+	// 8 bytes ok
+	body := bytes.Repeat([]byte("a"), 8)
+	req := httptest.NewRequest("PUT", "/api/v1/videos/vid1/resumable", bytes.NewReader(body))
+	req.Header.Set("Content-Range", "bytes 0-7/*")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 308 {
+		t.Fatalf("want 308 got %d %s", w.Code, w.Body.String())
+	}
+	// next chunk would exceed 16 bytes total
+	body2 := bytes.Repeat([]byte("b"), 9)
+	req2 := httptest.NewRequest("PUT", "/api/v1/videos/vid1/resumable", bytes.NewReader(body2))
+	req2.Header.Set("Content-Range", "bytes 8-16/*")
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413 got %d %s", w2.Code, w2.Body.String())
+	}
+	if len(st.data["raw/vid1/original.mp4"]) != 8 {
+		t.Fatalf("want 8 bytes kept got %d", len(st.data["raw/vid1/original.mp4"]))
+	}
+}
