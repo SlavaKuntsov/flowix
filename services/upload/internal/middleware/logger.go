@@ -7,7 +7,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// RequestLogger — structured logging via zerolog, includes trace_id=request_id
+// RequestLogger — structured logging via zerolog, includes trace_id
 func RequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -32,7 +32,6 @@ func RequestLogger(next http.Handler) http.Handler {
 			Int("status", ww.status).
 			Dur("duration", dur).
 			Str("trace_id", reqID).
-			Str("request_id", reqID).
 			Str("service", "upload").
 			Msg("request")
 	})
