@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -42,9 +43,17 @@ func (f *fakeStore) GetByID(_ context.Context, id string) (*model.Video, error) 
 	}
 	return v, nil
 }
-func (f *fakeStore) List(_ context.Context, limit, offset int) ([]model.Video, error) {
+func (f *fakeStore) List(_ context.Context, limit, offset int, viewerID string) ([]model.Video, error) {
 	out := []model.Video{}
 	for _, v := range f.videos {
+		// mirror the SQL visibility filter (issue #44); empty = default public
+		vis := v.Visibility
+		if vis == "" {
+			vis = model.VisibilityPublic
+		}
+		if vis != model.VisibilityPublic && (viewerID == "" || v.OwnerID != viewerID) {
+			continue
+		}
 		out = append(out, *v)
 	}
 	if offset < len(out) {
@@ -134,8 +143,10 @@ func testRouter(store VideoStore) chi.Router {
 		r.Patch("/api/v1/videos/{id}", vh.Update)
 		r.Delete("/api/v1/videos/{id}", vh.Delete)
 	})
-	r.Get("/api/v1/videos", vh.List)
-	r.Get("/api/v1/videos/{id}", vh.Get)
+	// public GET — optional JWT, как в cmd/server/main.go (issue #44)
+	optAuth := middleware.OptionalAuth(testSecret)
+	r.With(optAuth).Get("/api/v1/videos", vh.List)
+	r.With(optAuth).Get("/api/v1/videos/{id}", vh.Get)
 	r.Patch("/internal/videos/{id}/status", vh.UpdateStatus)
 	r.Get("/internal/videos/{id}", vh.GetInternal)
 	r.Get("/internal/videos/{id}/vod", vh.GetVODMapping)
@@ -456,5 +467,106 @@ func TestListThumbnailPresigned(t *testing.T) {
 	if len(resp.Data) != 1 || resp.Data[0].ThumbnailURL == nil ||
 		*resp.Data[0].ThumbnailURL != "http://localhost:9000/videos/thumbnails/vid-1/thumb.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=public" {
 		t.Fatalf("unexpected list thumbnails: %+v", resp.Data)
+	}
+}
+
+// Issue #44: List shows public videos to everyone; the owner additionally sees
+// their own private/unlisted. Anonymous viewers see only public.
+func TestListVisibilityFilter(t *testing.T) {
+	store := newFake()
+	store.videos["v-pub"] = &model.Video{ID: "v-pub", OwnerID: "o1", Title: "pub", Status: model.StatusReady, Visibility: model.VisibilityPublic}
+	store.videos["v-priv"] = &model.Video{ID: "v-priv", OwnerID: "o1", Title: "priv", Status: model.StatusReady, Visibility: model.VisibilityPrivate}
+	store.videos["v-unl"] = &model.Video{ID: "v-unl", OwnerID: "o1", Title: "unl", Status: model.StatusReady, Visibility: model.VisibilityUnlisted}
+	r := testRouter(store)
+
+	listTitles := func(req *http.Request) map[string]bool {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("list want 200 got %d %s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Data []model.Video `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, v := range resp.Data {
+			got[v.ID] = true
+		}
+		return got
+	}
+
+	got := listTitles(httptest.NewRequest("GET", "/api/v1/videos", nil))
+	if len(got) != 1 || !got["v-pub"] {
+		t.Fatalf("anonymous should see only public, got %v", got)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/videos", nil)
+	req.Header.Set("Authorization", "Bearer "+signToken("o2"))
+	got = listTitles(req)
+	if len(got) != 1 || !got["v-pub"] {
+		t.Fatalf("other user should see only public, got %v", got)
+	}
+
+	req = httptest.NewRequest("GET", "/api/v1/videos", nil)
+	req.Header.Set("Authorization", "Bearer "+signToken("o1"))
+	got = listTitles(req)
+	if len(got) != 3 {
+		t.Fatalf("owner should see all own videos, got %v", got)
+	}
+}
+
+// Issue #44: private video by direct ID — 403 for non-owner (and anonymous),
+// 200 for the owner; unlisted stays reachable by link; internal Get bypasses.
+func TestGetVisibility(t *testing.T) {
+	store := newFake()
+	store.videos["v-priv"] = &model.Video{ID: "v-priv", OwnerID: "o1", Title: "priv", Status: model.StatusReady, Visibility: model.VisibilityPrivate}
+	store.videos["v-unl"] = &model.Video{ID: "v-unl", OwnerID: "o1", Title: "unl", Status: model.StatusReady, Visibility: model.VisibilityUnlisted}
+	r := testRouter(store)
+
+	cases := []struct {
+		url     string
+		userID  string
+		wantGet int
+	}{
+		{"/api/v1/videos/v-priv", "", 403},
+		{"/api/v1/videos/v-priv", "o2", 403},
+		{"/api/v1/videos/v-priv", "o1", 200},
+		{"/api/v1/videos/v-unl", "", 200},
+		{"/api/v1/videos/v-unl", "o2", 200},
+		{"/internal/videos/v-priv", "", 200},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest("GET", c.url, nil)
+		if c.userID != "" {
+			req.Header.Set("Authorization", "Bearer "+signToken(c.userID))
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != c.wantGet {
+			t.Fatalf("%s (user=%q) want %d got %d %s", c.url, c.userID, c.wantGet, w.Code, w.Body.String())
+		}
+	}
+
+	// X-User-ID header is not trusted — owner view requires a real JWT (issue #44 review)
+	req := httptest.NewRequest("GET", "/api/v1/videos/v-priv", nil)
+	req.Header.Set("X-User-ID", "o1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 403 {
+		t.Fatalf("forged X-User-ID must not grant owner view, want 403 got %d", w.Code)
+	}
+
+	// refresh token is not an access identity — must not grant owner view (issue #44 review)
+	refresh := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "o1", "type": "refresh"})
+	rs, _ := refresh.SignedString([]byte(testSecret))
+	req = httptest.NewRequest("GET", "/api/v1/videos/v-priv", nil)
+	req.Header.Set("Authorization", "Bearer "+rs)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 403 {
+		t.Fatalf("refresh token must not grant owner view, want 403 got %d", w.Code)
 	}
 }

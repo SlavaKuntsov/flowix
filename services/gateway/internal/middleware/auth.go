@@ -58,10 +58,14 @@ func AuthMiddleware(secret string) func(http.Handler) http.Handler {
 
 // OptionalAuth — как Auth, но не требует токен: если токен есть — валидирует
 // и кладёт в контекст, если нет — пропускает. Удобно для публичных GET.
+// Невалидный/просроченный токен — тоже анонимный проход (issue #44): публичная
+// лента не должна падать 401, когда фронт прислал истёкший access-токен.
 func OptionalAuth(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
+			// клиентский X-User-ID недоверенный — убираем, ставим только после валидации JWT
+			r.Header.Del("X-User-ID")
 			if h == "" || !strings.HasPrefix(h, "Bearer ") {
 				next.ServeHTTP(w, r)
 				return
@@ -71,11 +75,15 @@ func OptionalAuth(secret string) func(http.Handler) http.Handler {
 				return []byte(secret), nil
 			}, jwt.WithValidMethods([]string{"HS256"}))
 			if err != nil || !token.Valid {
-				// невалидный токен даже в optional — 401, чтобы клиент знал
-				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+				next.ServeHTTP(w, r)
 				return
 			}
 			claims, _ := token.Claims.(jwt.MapClaims)
+			// refresh-токен не является идентичностью для чтения приватных данных
+			if typ, ok := claims["type"].(string); ok && typ != "" && typ != "access" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			sub, _ := claims["sub"].(string)
 			if sub != "" {
 				ctx := context.WithValue(r.Context(), UserIDKey, sub)

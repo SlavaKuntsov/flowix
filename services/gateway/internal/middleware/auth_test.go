@@ -74,3 +74,84 @@ func TestAuthRejectsRefreshToken(t *testing.T) {
 		t.Fatalf("want 401 for refresh token got %d", w.Code)
 	}
 }
+
+// Issue #44: OptionalAuth must strip a client-supplied X-User-ID — it is the
+// trust boundary for owner-scoped visibility on public video reads.
+func TestOptionalAuthStripsForgedUserID(t *testing.T) {
+	secret := "test-secret"
+	var sawHeader string
+	h := OptionalAuth(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawHeader = r.Header.Get("X-User-ID")
+		w.WriteHeader(200)
+	}))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-User-ID", "victim")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 || sawHeader != "" {
+		t.Fatalf("forged X-User-ID must be stripped, got %q (code %d)", sawHeader, w.Code)
+	}
+}
+
+func TestOptionalAuthSetsUserIDFromJWT(t *testing.T) {
+	secret := "test-secret"
+	var sawHeader string
+	h := OptionalAuth(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawHeader = r.Header.Get("X-User-ID")
+		w.WriteHeader(200)
+	}))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-User-ID", "victim")
+	req.Header.Set("Authorization", "Bearer "+mustToken(secret, "u1"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 || sawHeader != "u1" {
+		t.Fatalf("valid JWT must set X-User-ID=u1, got %q (code %d)", sawHeader, w.Code)
+	}
+}
+
+// Issue #44 (review): an expired/invalid token on a public endpoint must
+// degrade to anonymous, not 401 — the frontend sends stored tokens on reads.
+func TestOptionalAuthInvalidTokenIsAnonymous(t *testing.T) {
+	secret := "test-secret"
+	called := false
+	var sawHeader string
+	h := OptionalAuth(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		sawHeader = r.Header.Get("X-User-ID")
+		w.WriteHeader(200)
+	}))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-User-ID", "victim")
+	req.Header.Set("Authorization", "Bearer invalid.token.here")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 || !called || sawHeader != "" {
+		t.Fatalf("invalid token must be anonymous, got code %d called %v header %q", w.Code, called, sawHeader)
+	}
+}
+
+// Issue #44 review: a refresh token is not an access identity — OptionalAuth
+// must treat it as anonymous (same rule as AuthMiddleware's type check).
+func TestOptionalAuthRejectsRefreshToken(t *testing.T) {
+	secret := "test-secret"
+	var sawHeader string
+	called := false
+	h := OptionalAuth(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		sawHeader = r.Header.Get("X-User-ID")
+		w.WriteHeader(200)
+	}))
+	refresh := func() string {
+		tt := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "u1", "type": "refresh"})
+		s, _ := tt.SignedString([]byte(secret))
+		return s
+	}()
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+refresh)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 || !called || sawHeader != "" {
+		t.Fatalf("refresh token must be anonymous, got code %d called %v header %q", w.Code, called, sawHeader)
+	}
+}

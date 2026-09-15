@@ -49,3 +49,43 @@ func UserIDFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(UserIDKey).(string)
 	return v
 }
+
+// OptionalAuth — как Auth, но не требует токен: валидный Bearer кладёт sub в
+// контекст, отсутствие/невалидность токена — анонимный доступ (публичные GET
+// не должны падать 401 при истёкшем access-токене, issue #44). Владелец видит
+// свои private/unlisted видео только через собственный JWT — заголовок
+// X-User-ID не доверенный, т.к. metadata опубликована наружу.
+func OptionalAuth(secret string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := r.Header.Get("Authorization")
+			if !strings.HasPrefix(h, "Bearer ") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			token, err := jwt.Parse(strings.TrimPrefix(h, "Bearer "), func(t *jwt.Token) (interface{}, error) {
+				return []byte(secret), nil
+			}, jwt.WithValidMethods([]string{"HS256"}))
+			if err != nil || !token.Valid {
+				next.ServeHTTP(w, r)
+				return
+			}
+			claims, ok := token.Claims.(jwt.MapClaims)
+			if !ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// refresh-токен не является идентичностью для чтения приватных данных
+			if typ, ok := claims["type"].(string); ok && typ != "" && typ != "access" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			sub, _ := claims["sub"].(string)
+			if sub == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), UserIDKey, sub)))
+		})
+	}
+}

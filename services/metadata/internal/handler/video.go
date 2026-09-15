@@ -20,7 +20,7 @@ import (
 type VideoStore interface {
 	Create(ctx context.Context, ownerID, title, description string) (*model.Video, error)
 	GetByID(ctx context.Context, id string) (*model.Video, error)
-	List(ctx context.Context, limit, offset int) ([]model.Video, error)
+	List(ctx context.Context, limit, offset int, viewerID string) ([]model.Video, error)
 	Update(ctx context.Context, id, ownerID string, req model.UpdateVideoRequest) (*model.Video, error)
 	Delete(ctx context.Context, id, ownerID string) error
 	UpdateStatus(ctx context.Context, id string, status model.VideoStatus, renditions []model.Rendition) error
@@ -143,17 +143,11 @@ func (h *VideoHandler) Create(w http.ResponseWriter, r *http.Request) {
 // @Produce json
 // @Param id path string true "Video ID"
 // @Success 200 {object} model.Video
+// @Failure 403 {string} string "forbidden (private, not owner)"
 // @Failure 404 {string} string "not found"
 // @Router /api/v1/videos/{id} [get]
 func (h *VideoHandler) Get(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	v, err := h.repo.GetByID(r.Context(), id)
-	if err != nil {
-		writeError(w, r, http.StatusNotFound, "not found")
-		return
-	}
-	h.presignThumbnail(r.Context(), v)
-	writeJSON(w, r, http.StatusOK, v)
+	h.getVideo(w, r, true)
 }
 
 // GetInternal godoc
@@ -164,7 +158,24 @@ func (h *VideoHandler) Get(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} model.Video
 // @Router /internal/videos/{id} [get]
 func (h *VideoHandler) GetInternal(w http.ResponseWriter, r *http.Request) {
-	h.Get(w, r)
+	h.getVideo(w, r, false)
+}
+
+// getVideo fetches one video; when enforceVisibility, a private video is
+// returned only to its owner (issue #44) — unlisted stays reachable by link.
+func (h *VideoHandler) getVideo(w http.ResponseWriter, r *http.Request, enforceVisibility bool) {
+	id := chi.URLParam(r, "id")
+	v, err := h.repo.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, r, http.StatusNotFound, "not found")
+		return
+	}
+	if enforceVisibility && v.Visibility == model.VisibilityPrivate && middleware.UserIDFromCtx(r.Context()) != v.OwnerID {
+		writeError(w, r, http.StatusForbidden, "forbidden")
+		return
+	}
+	h.presignThumbnail(r.Context(), v)
+	writeJSON(w, r, http.StatusOK, v)
 }
 
 type vodMapping struct {
@@ -239,7 +250,7 @@ func (h *VideoHandler) List(w http.ResponseWriter, r *http.Request) {
 	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
 		offset = v
 	}
-	list, err := h.repo.List(r.Context(), limit, offset)
+	list, err := h.repo.List(r.Context(), limit, offset, middleware.UserIDFromCtx(r.Context()))
 	if err != nil {
 		slog.Error("list videos failed", "error", err)
 		writeError(w, r, http.StatusInternalServerError, "internal error")

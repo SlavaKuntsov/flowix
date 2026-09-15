@@ -154,9 +154,12 @@ func main() {
 		r.Patch("/api/v1/videos/{id}", vh.Update)
 		r.Delete("/api/v1/videos/{id}", vh.Delete)
 	})
-	// public list/get
-	r.Get("/api/v1/videos", vh.List)
-	r.Get("/api/v1/videos/{id}", vh.Get)
+	// public list/get: optional JWT — владелец видит свои private/unlisted
+	// (issue #44). Идентичность только из собственного JWT (X-User-ID не
+	// доверенный — metadata опубликована наружу).
+	optAuth := mw.OptionalAuth(jwtSecret)
+	r.With(optAuth).Get("/api/v1/videos", vh.List)
+	r.With(optAuth).Get("/api/v1/videos/{id}", vh.Get)
 	// internal — protected by X-Internal-Token (gateway/nginx/transcoder)
 	r.Group(func(r chi.Router) {
 		r.Use(mw.InternalAuth(internalToken))

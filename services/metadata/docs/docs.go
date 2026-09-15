@@ -124,6 +124,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/flowix_metadata_internal_model.Video"
                         }
                     },
+                    "403": {
+                        "description": "forbidden (private, not owner)",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
                     "404": {
                         "description": "not found",
                         "schema": {
@@ -309,6 +315,9 @@ const docTemplate = `{
                 },
                 "title": {
                     "type": "string"
+                },
+                "visibility": {
+                    "$ref": "#/definitions/flowix_metadata_internal_model.Visibility"
                 }
             }
         },
@@ -364,6 +373,9 @@ const docTemplate = `{
                 },
                 "title": {
                     "type": "string"
+                },
+                "visibility": {
+                    "$ref": "#/definitions/flowix_metadata_internal_model.Visibility"
                 }
             }
         },
@@ -405,6 +417,12 @@ const docTemplate = `{
                 },
                 "title": {
                     "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "visibility": {
+                    "$ref": "#/definitions/flowix_metadata_internal_model.Visibility"
                 }
             }
         },
@@ -421,6 +439,19 @@ const docTemplate = `{
                 "StatusProcessing",
                 "StatusReady",
                 "StatusFailed"
+            ]
+        },
+        "flowix_metadata_internal_model.Visibility": {
+            "type": "string",
+            "enum": [
+                "public",
+                "private",
+                "unlisted"
+            ],
+            "x-enum-varnames": [
+                "VisibilityPublic",
+                "VisibilityPrivate",
+                "VisibilityUnlisted"
             ]
         }
     },

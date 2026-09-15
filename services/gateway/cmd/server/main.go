@@ -14,8 +14,8 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"flowix/gateway/internal/handler"
-	gwmw "flowix/gateway/internal/middleware"
 	"flowix/gateway/internal/metrics"
+	gwmw "flowix/gateway/internal/middleware"
 	"flowix/gateway/internal/proxy"
 )
 
@@ -120,9 +120,12 @@ func main() {
 	r.With(authMw).Get("/api/v1/videos/{id}/hls-token", gwmw.HLSTokenHandler(jwtSecret, internalToken, metadataURL))
 
 	// --- Metadata service ---
-	// Публичные GET (лист и деталь) — без JWT
-	r.Get("/api/v1/videos", metadataProxy.ServeHTTP)
-	r.Get("/api/v1/videos/*", metadataProxy.ServeHTTP)
+	// Публичные GET (лист и деталь) — без обязательного JWT, но с OptionalAuth:
+	// валидный Bearer превращается в X-User-ID, чтобы metadata отдала приватные
+	// видео владельцу (issue #44)
+	optAuth := gwmw.OptionalAuth(jwtSecret)
+	r.With(optAuth).Get("/api/v1/videos", metadataProxy.ServeHTTP)
+	r.With(optAuth).Get("/api/v1/videos/*", metadataProxy.ServeHTTP)
 
 	// Защищённые мутации metadata — требуют JWT
 	r.With(authMw).Post("/api/v1/videos", metadataProxy.ServeHTTP)
