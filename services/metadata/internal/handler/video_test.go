@@ -143,8 +143,10 @@ func testRouter(store VideoStore) chi.Router {
 		r.Patch("/api/v1/videos/{id}", vh.Update)
 		r.Delete("/api/v1/videos/{id}", vh.Delete)
 	})
-	r.Get("/api/v1/videos", vh.List)
-	r.Get("/api/v1/videos/{id}", vh.Get)
+	// public GET — optional JWT, как в cmd/server/main.go (issue #44)
+	optAuth := middleware.OptionalAuth(testSecret)
+	r.With(optAuth).Get("/api/v1/videos", vh.List)
+	r.With(optAuth).Get("/api/v1/videos/{id}", vh.Get)
 	r.Patch("/internal/videos/{id}/status", vh.UpdateStatus)
 	r.Get("/internal/videos/{id}", vh.GetInternal)
 	r.Get("/internal/videos/{id}/vod", vh.GetVODMapping)
@@ -502,14 +504,14 @@ func TestListVisibilityFilter(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("GET", "/api/v1/videos", nil)
-	req.Header.Set("X-User-ID", "o2")
+	req.Header.Set("Authorization", "Bearer "+signToken("o2"))
 	got = listTitles(req)
 	if len(got) != 1 || !got["v-pub"] {
 		t.Fatalf("other user should see only public, got %v", got)
 	}
 
 	req = httptest.NewRequest("GET", "/api/v1/videos", nil)
-	req.Header.Set("X-User-ID", "o1")
+	req.Header.Set("Authorization", "Bearer "+signToken("o1"))
 	got = listTitles(req)
 	if len(got) != 3 {
 		t.Fatalf("owner should see all own videos, got %v", got)
@@ -539,12 +541,21 @@ func TestGetVisibility(t *testing.T) {
 	for _, c := range cases {
 		req := httptest.NewRequest("GET", c.url, nil)
 		if c.userID != "" {
-			req.Header.Set("X-User-ID", c.userID)
+			req.Header.Set("Authorization", "Bearer "+signToken(c.userID))
 		}
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != c.wantGet {
 			t.Fatalf("%s (user=%q) want %d got %d %s", c.url, c.userID, c.wantGet, w.Code, w.Body.String())
 		}
+	}
+
+	// X-User-ID header is not trusted — owner view requires a real JWT (issue #44 review)
+	req := httptest.NewRequest("GET", "/api/v1/videos/v-priv", nil)
+	req.Header.Set("X-User-ID", "o1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 403 {
+		t.Fatalf("forged X-User-ID must not grant owner view, want 403 got %d", w.Code)
 	}
 }

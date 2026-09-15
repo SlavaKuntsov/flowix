@@ -170,7 +170,7 @@ func (h *VideoHandler) getVideo(w http.ResponseWriter, r *http.Request, enforceV
 		writeError(w, r, http.StatusNotFound, "not found")
 		return
 	}
-	if enforceVisibility && v.Visibility == model.VisibilityPrivate && middleware.UserIDFromHeader(r) != v.OwnerID {
+	if enforceVisibility && v.Visibility == model.VisibilityPrivate && middleware.UserIDFromCtx(r.Context()) != v.OwnerID {
 		writeError(w, r, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -250,7 +250,7 @@ func (h *VideoHandler) List(w http.ResponseWriter, r *http.Request) {
 	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
 		offset = v
 	}
-	list, err := h.repo.List(r.Context(), limit, offset, middleware.UserIDFromHeader(r))
+	list, err := h.repo.List(r.Context(), limit, offset, middleware.UserIDFromCtx(r.Context()))
 	if err != nil {
 		slog.Error("list videos failed", "error", err)
 		writeError(w, r, http.StatusInternalServerError, "internal error")

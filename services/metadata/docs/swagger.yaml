@@ -6,6 +6,8 @@ definitions:
         type: string
       title:
         type: string
+      visibility:
+        $ref: '#/definitions/flowix_metadata_internal_model.Visibility'
     required:
     - title
     type: object
@@ -44,6 +46,8 @@ definitions:
         type: string
       title:
         type: string
+      visibility:
+        $ref: '#/definitions/flowix_metadata_internal_model.Visibility'
     type: object
   flowix_metadata_internal_model.Video:
     properties:
@@ -71,6 +75,10 @@ definitions:
         type: string
       title:
         type: string
+      updated_at:
+        type: string
+      visibility:
+        $ref: '#/definitions/flowix_metadata_internal_model.Visibility'
     type: object
   flowix_metadata_internal_model.VideoStatus:
     enum:
@@ -84,6 +92,16 @@ definitions:
     - StatusProcessing
     - StatusReady
     - StatusFailed
+  flowix_metadata_internal_model.Visibility:
+    enum:
+    - public
+    - private
+    - unlisted
+    type: string
+    x-enum-varnames:
+    - VisibilityPublic
+    - VisibilityPrivate
+    - VisibilityUnlisted
 info:
   contact: {}
   description: Video metadata CRUD + internal status (Go chi). JWT Bearer required
@@ -183,6 +201,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/flowix_metadata_internal_model.Video'
+        "403":
+          description: forbidden (private, not owner)
+          schema:
+            type: string
         "404":
           description: not found
           schema:
