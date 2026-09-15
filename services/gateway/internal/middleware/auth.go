@@ -79,6 +79,11 @@ func OptionalAuth(secret string) func(http.Handler) http.Handler {
 				return
 			}
 			claims, _ := token.Claims.(jwt.MapClaims)
+			// refresh-токен не является идентичностью для чтения приватных данных
+			if typ, ok := claims["type"].(string); ok && typ != "" && typ != "access" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			sub, _ := claims["sub"].(string)
 			if sub != "" {
 				ctx := context.WithValue(r.Context(), UserIDKey, sub)

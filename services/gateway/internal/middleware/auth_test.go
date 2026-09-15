@@ -130,3 +130,28 @@ func TestOptionalAuthInvalidTokenIsAnonymous(t *testing.T) {
 		t.Fatalf("invalid token must be anonymous, got code %d called %v header %q", w.Code, called, sawHeader)
 	}
 }
+
+// Issue #44 review: a refresh token is not an access identity — OptionalAuth
+// must treat it as anonymous (same rule as AuthMiddleware's type check).
+func TestOptionalAuthRejectsRefreshToken(t *testing.T) {
+	secret := "test-secret"
+	var sawHeader string
+	called := false
+	h := OptionalAuth(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		sawHeader = r.Header.Get("X-User-ID")
+		w.WriteHeader(200)
+	}))
+	refresh := func() string {
+		tt := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "u1", "type": "refresh"})
+		s, _ := tt.SignedString([]byte(secret))
+		return s
+	}()
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+refresh)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 || !called || sawHeader != "" {
+		t.Fatalf("refresh token must be anonymous, got code %d called %v header %q", w.Code, called, sawHeader)
+	}
+}
