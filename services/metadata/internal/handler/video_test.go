@@ -558,4 +558,15 @@ func TestGetVisibility(t *testing.T) {
 	if w.Code != 403 {
 		t.Fatalf("forged X-User-ID must not grant owner view, want 403 got %d", w.Code)
 	}
+
+	// refresh token is not an access identity — must not grant owner view (issue #44 review)
+	refresh := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "o1", "type": "refresh"})
+	rs, _ := refresh.SignedString([]byte(testSecret))
+	req = httptest.NewRequest("GET", "/api/v1/videos/v-priv", nil)
+	req.Header.Set("Authorization", "Bearer "+rs)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 403 {
+		t.Fatalf("refresh token must not grant owner view, want 403 got %d", w.Code)
+	}
 }

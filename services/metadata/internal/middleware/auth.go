@@ -75,6 +75,11 @@ func OptionalAuth(secret string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			// refresh-токен не является идентичностью для чтения приватных данных
+			if typ, ok := claims["type"].(string); ok && typ != "" && typ != "access" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			sub, _ := claims["sub"].(string)
 			if sub == "" {
 				next.ServeHTTP(w, r)
