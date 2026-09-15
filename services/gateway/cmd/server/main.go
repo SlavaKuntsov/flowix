@@ -19,6 +19,16 @@ import (
 	"flowix/gateway/internal/proxy"
 )
 
+type routerConfig struct {
+	jwtSecret      string
+	internalToken  string
+	uploadMaxBytes int64
+	authURL        string
+	metadataURL    string
+	uploadURL      string
+	vodURL         string
+}
+
 func main() {
 	port := envOr("GATEWAY_PORT", "8080")
 	jwtSecret := envOr("JWT_SECRET", "change-me-super-secret-jwt-key-32chars")
@@ -53,10 +63,34 @@ func main() {
 	}
 	logger := log.With().Str("service", "gateway").Logger()
 
-	authTarget := mustParseURL(authURL)
-	metadataTarget := mustParseURL(metadataURL)
-	uploadTarget := mustParseURL(uploadURL)
-	vodTarget := mustParseURL(vodURL)
+	r := newRouter(routerConfig{
+		jwtSecret:      jwtSecret,
+		internalToken:  internalToken,
+		uploadMaxBytes: uploadMaxBytes,
+		authURL:        authURL,
+		metadataURL:    metadataURL,
+		uploadURL:      uploadURL,
+		vodURL:         vodURL,
+	})
+
+	logger.Info().
+		Str("port", port).
+		Str("auth", authURL).
+		Str("metadata", metadataURL).
+		Str("upload", uploadURL).
+		Str("vod", vodURL).
+		Msg("gateway starting")
+
+	if err := http.ListenAndServe(":"+port, r); err != nil {
+		logger.Fatal().Err(err).Msg("gateway stopped")
+	}
+}
+
+func newRouter(cfg routerConfig) *chi.Mux {
+	authTarget := mustParseURL(cfg.authURL)
+	metadataTarget := mustParseURL(cfg.metadataURL)
+	uploadTarget := mustParseURL(cfg.uploadURL)
+	vodTarget := mustParseURL(cfg.vodURL)
 
 	authProxy := proxy.New(authTarget)
 	metadataProxy := proxy.New(metadataTarget)
@@ -83,7 +117,7 @@ func main() {
 	})
 
 	// aggregated Swagger — единая точка на gateway, разделённая по сервисам (tags: auth/videos/upload)
-	docsH := handler.NewDocsHandler(authURL, metadataURL, uploadURL)
+	docsH := handler.NewDocsHandler(cfg.authURL, cfg.metadataURL, cfg.uploadURL)
 	r.Get("/docs", docsH.HandleDocsUI)
 	r.Get("/docs/", docsH.HandleDocsUI)
 	r.Get("/openapi.json", docsH.HandleMerged)
@@ -91,7 +125,7 @@ func main() {
 	r.Get("/openapi/metadata.json", docsH.HandleMetadataSpec)
 	r.Get("/openapi/upload.json", docsH.HandleUploadSpec)
 
-	authMw := gwmw.AuthMiddleware(jwtSecret)
+	authMw := gwmw.AuthMiddleware(cfg.jwtSecret)
 
 	// --- Auth service: все /api/v1/auth/* публичные, без JWT ---
 	// chi wildcard: /api/v1/auth/* захватывает /api/v1/auth/login etc.
@@ -102,7 +136,7 @@ func main() {
 	// Handle для POST — защищён, с лимитом 5-6GB (MaxBytesReader), прокидывает X-Internal-Token если нужен
 	maxBytesMw := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r.Body = http.MaxBytesReader(w, r.Body, uploadMaxBytes)
+			r.Body = http.MaxBytesReader(w, r.Body, cfg.uploadMaxBytes)
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -117,13 +151,13 @@ func main() {
 	r.With(authMw, maxBytesMw).Put("/api/v1/videos/{id}/resumable", uploadProxy.ServeHTTP)
 
 	// --- HLS token for private videos (signed URL 1h) — must be before generic /videos/* proxy ---
-	r.With(authMw).Get("/api/v1/videos/{id}/hls-token", gwmw.HLSTokenHandler(jwtSecret, internalToken, metadataURL))
+	r.With(authMw).Get("/api/v1/videos/{id}/hls-token", gwmw.HLSTokenHandler(cfg.jwtSecret, cfg.internalToken, cfg.metadataURL))
 
 	// --- Metadata service ---
 	// Публичные GET (лист и деталь) — без обязательного JWT, но с OptionalAuth:
 	// валидный Bearer превращается в X-User-ID, чтобы metadata отдала приватные
 	// видео владельцу (issue #44)
-	optAuth := gwmw.OptionalAuth(jwtSecret)
+	optAuth := gwmw.OptionalAuth(cfg.jwtSecret)
 	r.With(optAuth).Get("/api/v1/videos", metadataProxy.ServeHTTP)
 	r.With(optAuth).Get("/api/v1/videos/*", metadataProxy.ServeHTTP)
 
@@ -135,38 +169,28 @@ func main() {
 	r.With(authMw).Put("/api/v1/videos/*", metadataProxy.ServeHTTP)
 
 	// --- HLS / VOD: защищён HLSAuth (private 403 без токена, public пропуск) ---
-	hlsAuth := gwmw.HLSAuth(jwtSecret, internalToken, metadataURL)
+	hlsAuth := gwmw.HLSAuth(cfg.jwtSecret, cfg.internalToken, cfg.metadataURL)
 	r.With(hlsAuth, metrics.Middleware).Handle("/hls/*", vodProxy)
 
 	// Thumbnails: since issue #43 the MinIO bucket is fully private — metadata returns
 	// presigned absolute thumbnail_url (MINIO_PUBLIC_ENDPOINT); the old anonymous
-	// /thumbnails/* MinIO proxy is removed.
+	// /thumbnails/* MinIO proxy is removed (issue #45 regression test).
 
 	// Inject X-Internal-Token for internal downstream calls (metadata internal/*, nginx vod mapping)
-	if internalToken != "" {
+	if cfg.internalToken != "" {
 		origMetaDirector := metadataProxy.Director
 		metadataProxy.Director = func(r *http.Request) {
 			origMetaDirector(r)
-			r.Header.Set("X-Internal-Token", internalToken)
+			r.Header.Set("X-Internal-Token", cfg.internalToken)
 		}
 		origVodDirector := vodProxy.Director
 		vodProxy.Director = func(r *http.Request) {
 			origVodDirector(r)
-			r.Header.Set("X-Internal-Token", internalToken)
+			r.Header.Set("X-Internal-Token", cfg.internalToken)
 		}
 	}
 
-	logger.Info().
-		Str("port", port).
-		Str("auth", authURL).
-		Str("metadata", metadataURL).
-		Str("upload", uploadURL).
-		Str("vod", vodURL).
-		Msg("gateway starting")
-
-	if err := http.ListenAndServe(":"+port, r); err != nil {
-		logger.Fatal().Err(err).Msg("gateway stopped")
-	}
+	return r
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
