@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+
+	mw "flowix/upload/internal/middleware"
 )
 
 // ResumableStorage extends PresignStorage with size and object access.
@@ -26,15 +28,16 @@ type ResumableStorage interface {
 
 type ResumableHandler struct {
 	storage ResumableStorage
+	owner   OwnershipChecker
 }
 
-func NewResumableHandler(s ResumableStorage) *ResumableHandler {
-	return &ResumableHandler{storage: s}
+func NewResumableHandler(s ResumableStorage, o OwnershipChecker) *ResumableHandler {
+	return &ResumableHandler{storage: s, owner: o}
 }
 
 // statusResponse for GET resumable offset.
 type statusResponse struct {
-	Uploaded int64 `json:"uploaded"`
+	Uploaded int64  `json:"uploaded"`
 	Total    *int64 `json:"total,omitempty"`
 }
 
@@ -50,6 +53,10 @@ func (h *ResumableHandler) Status(w http.ResponseWriter, r *http.Request) {
 	videoID := chi.URLParam(r, "id")
 	if videoID == "" {
 		http.Error(w, `{"error":"video_id required"}`, 400)
+		return
+	}
+	// IDOR (issue #46): only the owner may read the upload offset.
+	if !requireOwnership(h.owner, videoID, mw.UserIDFromCtx(r.Context()), w) {
 		return
 	}
 	key := fmt.Sprintf("raw/%s/original.mp4", videoID)
@@ -101,6 +108,10 @@ func (h *ResumableHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	videoID := chi.URLParam(r, "id")
 	if videoID == "" {
 		http.Error(w, `{"error":"video_id required"}`, 400)
+		return
+	}
+	// IDOR (issue #46): only the owner may append/overwrite the raw object.
+	if !requireOwnership(h.owner, videoID, mw.UserIDFromCtx(r.Context()), w) {
 		return
 	}
 	maxBytes := int64(5 << 30) // 5GB
