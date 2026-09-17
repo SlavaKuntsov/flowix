@@ -1,12 +1,17 @@
 import re
 from datetime import datetime, timedelta, timezone
 
-from jose import JWTError, jwt  # type: ignore[import-untyped]
-from passlib.context import CryptContext  # type: ignore[import-untyped]
+import jwt
+from argon2 import PasswordHasher
+from argon2.exceptions import Argon2Error
 
 from .config import settings
 
-pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+# Issue #48: python-jose CVE-2024-33664 (JWT bomb DoS in decode) — reject
+# oversized tokens before parsing instead of relying on the lib.
+MAX_TOKEN_LENGTH = 8192
+
+pwd_context = PasswordHasher()
 ALGO = "HS256"
 
 
@@ -15,7 +20,10 @@ def hash_password(pw: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return pwd_context.verify(hashed, plain)
+    except Argon2Error:
+        return False
 
 
 def _parse_ttl(s: str) -> timedelta:
@@ -46,7 +54,14 @@ def create_refresh_token(sub: str) -> str:
 
 
 def decode_token(token: str) -> dict:
+    if len(token) > MAX_TOKEN_LENGTH:
+        raise ValueError("token too large")
     try:
-        return jwt.decode(token, settings.jwt_secret, algorithms=[ALGO])
-    except JWTError as e:
+        return jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[ALGO],
+            options={"require": ["exp", "sub"]},
+        )
+    except jwt.PyJWTError as e:
         raise ValueError(str(e))

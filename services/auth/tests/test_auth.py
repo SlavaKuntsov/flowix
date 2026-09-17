@@ -140,6 +140,28 @@ def test_me_invalid_token():
     assert r.status_code == 401
 
 
+def test_me_oversized_token_rejected():
+    # issue #48: JWT bomb (CVE-2024-33664) — oversized token must 401 before decode
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=FakeResult(None))
+    c = client_with_mock(mock_db)
+    r = c.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {'x' * 16384}"})
+    clear_overrides()
+    assert r.status_code == 401
+
+
+def test_refresh_token_without_exp_rejected():
+    # issue #53: token without exp must not validate
+    import jwt as pyjwt
+
+    from src.core.config import settings
+
+    token = pyjwt.encode({"sub": str(uuid.uuid4()), "type": "refresh"}, settings.jwt_secret, algorithm="HS256")
+    c = TestClient(app)
+    r = c.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401
+
+
 def test_refresh_success():
     uid = str(uuid.uuid4())
     refresh = create_refresh_token(uid)
