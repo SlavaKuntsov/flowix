@@ -74,6 +74,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 - **ТЗ и архитектура (бывший AGENTS.md):** `docs/spec.md:1` — стек, структура монорепо, описание каждого микросервиса, FFmpeg-параметры, кодстайл, коммит-конвенции.
 - **Сервисы и пайплайн (на русском):** `docs/services-pipeline.md:1` — зачем каждый сервис (gateway/auth/metadata/upload/transcoder/nginx-vod/frontend) и полный пайплайн `upload → RabbitMQ → transcode → MinIO → HLS` с диаграммой и сценариями отладки.
+- **Тикеты и роадмап:** только в GitHub project — в репо файлов с фазами/тикетами нет, не создавай их.
 - **Swagger / Zed:** `docs/SWAGGER.md:1`, `docs/ZED.md:1` — генерация OpenAPI для Go, настройки IDE.
 
 ### Стек и структура (кратко)
