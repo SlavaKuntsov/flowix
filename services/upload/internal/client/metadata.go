@@ -5,19 +5,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 )
 
 type MetadataClient struct {
-	baseURL string
-	client  *http.Client
+	baseURL       string
+	internalToken string
+	client        *http.Client
 }
 
-func NewMetadataClient(baseURL string) *MetadataClient {
-	return &MetadataClient{baseURL: baseURL, client: &http.Client{}}
+func NewMetadataClient(baseURL, internalToken string) *MetadataClient {
+	return &MetadataClient{baseURL: baseURL, internalToken: internalToken, client: &http.Client{}}
 }
 
 type CreateVideoResponse struct {
 	ID string `json:"id"`
+}
+
+type internalVideoResponse struct {
+	ID      string `json:"id"`
+	OwnerID string `json:"owner_id"`
 }
 
 func (c *MetadataClient) CreateVideo(token, title, description string) (string, error) {
@@ -44,4 +51,29 @@ func (c *MetadataClient) CreateVideo(token, title, description string) (string, 
 		return "", fmt.Errorf("empty video id")
 	}
 	return out.ID, nil
+}
+
+// GetVideoOwner resolves the owner of a video via metadata internal API
+// (upload handlers must verify ownership before writing raw/{id}/* — issue #46).
+func (c *MetadataClient) GetVideoOwner(videoID string) (string, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/internal/videos/"+url.PathEscape(videoID), nil)
+	if err != nil {
+		return "", err
+	}
+	if c.internalToken != "" {
+		req.Header.Set("X-Internal-Token", c.internalToken)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("metadata owner: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("metadata owner status %d", resp.StatusCode)
+	}
+	var out internalVideoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	return out.OwnerID, nil
 }

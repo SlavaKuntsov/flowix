@@ -14,10 +14,12 @@ import (
 )
 
 type fakePresignStorage struct {
-	url string
-	err error
-	statErr error
-	presignedKey string
+	url             string
+	err             error
+	statErr         error
+	statSize        int64
+	statContentType string
+	presignedKey    string
 }
 
 func (f *fakePresignStorage) PresignedPutObjectExternal(_ context.Context, key string, _ time.Duration, _ string) (string, error) {
@@ -37,11 +39,27 @@ func (f *fakePresignStorage) StatObject(_ context.Context, key string) error {
 	return nil
 }
 
+func (f *fakePresignStorage) StatObjectInfo(_ context.Context, key string) (int64, string, error) {
+	if f.statErr != nil {
+		return 0, "", f.statErr
+	}
+	return f.statSize, f.statContentType, nil
+}
+
+// fakeOwnership is a stub OwnershipChecker: owner returns the owner id,
+// err forces the metadata-unavailable path.
+type fakeOwnership struct {
+	owner string
+	err   error
+}
+
+func (f *fakeOwnership) GetVideoOwner(string) (string, error) { return f.owner, f.err }
+
 func TestPresignSuccess(t *testing.T) {
 	meta := &fakeMeta{id: "vid-123"}
 	st := &fakePresignStorage{}
 	pub := &fakePub{}
-	h := NewPresignHandler(st, pub, meta)
+	h := NewPresignHandler(st, pub, meta, &fakeOwnership{owner: "owner1"})
 
 	body, _ := json.Marshal(map[string]string{"title": "hello", "filename": "test.mp4", "content_type": "video/mp4"})
 	req := httptest.NewRequest("POST", "/api/v1/videos/presign", bytes.NewReader(body))
@@ -71,7 +89,7 @@ func TestPresignSuccess(t *testing.T) {
 
 func TestPresignInvalidContentType(t *testing.T) {
 	meta := &fakeMeta{id: "vid-1"}
-	h := NewPresignHandler(&fakePresignStorage{}, &fakePub{}, meta)
+	h := NewPresignHandler(&fakePresignStorage{}, &fakePub{}, meta, &fakeOwnership{owner: "owner1"})
 	body, _ := json.Marshal(map[string]string{"title": "x", "content_type": "image/jpeg"})
 	req := httptest.NewRequest("POST", "/api/v1/videos/presign", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -85,9 +103,9 @@ func TestPresignInvalidContentType(t *testing.T) {
 
 func TestCompleteSuccess(t *testing.T) {
 	meta := &fakeMeta{id: "vid-123"}
-	st := &fakePresignStorage{}
+	st := &fakePresignStorage{statSize: 1024, statContentType: "video/mp4"}
 	pub := &fakePub{}
-	h := NewPresignHandler(st, pub, meta)
+	h := NewPresignHandler(st, pub, meta, &fakeOwnership{owner: "owner1"})
 
 	r := newChiRouter(h)
 	req := httptest.NewRequest("POST", "/api/v1/videos/vid-123/complete", nil)
@@ -109,7 +127,7 @@ func TestCompleteSuccess(t *testing.T) {
 func TestCompleteNotFound(t *testing.T) {
 	meta := &fakeMeta{id: "vid-1"}
 	st := &fakePresignStorage{statErr: errFake("not found")}
-	h := NewPresignHandler(st, &fakePub{}, meta)
+	h := NewPresignHandler(st, &fakePub{}, meta, &fakeOwnership{owner: "owner1"})
 	r := newChiRouter(h)
 	req := httptest.NewRequest("POST", "/api/v1/videos/vid-1/complete", nil)
 	req = req.WithContext(context.WithValue(req.Context(), mw.UserIDKey, "owner1"))
@@ -125,4 +143,87 @@ func newChiRouter(h *PresignHandler) http.Handler {
 	r.Post("/api/v1/videos/{id}/complete", h.Complete)
 	r.Post("/api/v1/videos/complete", h.Complete)
 	return r
+}
+
+// IDOR (issue #46): a foreign video id must be rejected with 403.
+
+func TestCompleteForeignVideoForbidden(t *testing.T) {
+	h := NewPresignHandler(
+		&fakePresignStorage{statSize: 1024, statContentType: "video/mp4"},
+		&fakePub{}, &fakeMeta{id: "vid-1"},
+		&fakeOwnership{owner: "real-owner"},
+	)
+	r := newChiRouter(h)
+	req := httptest.NewRequest("POST", "/api/v1/videos/vid-1/complete", nil)
+	req = req.WithContext(context.WithValue(req.Context(), mw.UserIDKey, "attacker"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("want 403 got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCompleteUnknownVideo(t *testing.T) {
+	h := NewPresignHandler(
+		&fakePresignStorage{},
+		&fakePub{}, &fakeMeta{},
+		&fakeOwnership{err: errFake("metadata owner status 404")},
+	)
+	r := newChiRouter(h)
+	req := httptest.NewRequest("POST", "/api/v1/videos/no-such-video/complete", nil)
+	req = req.WithContext(context.WithValue(req.Context(), mw.UserIDKey, "owner1"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404 got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCompleteMetadataUnavailableForbidden(t *testing.T) {
+	// metadata unavailable -> fail closed (no ownership bypass)
+	h := NewPresignHandler(
+		&fakePresignStorage{statSize: 1024},
+		&fakePub{}, &fakeMeta{id: "vid-1"},
+		&fakeOwnership{err: errFake("connection refused")},
+	)
+	r := newChiRouter(h)
+	req := httptest.NewRequest("POST", "/api/v1/videos/vid-1/complete", nil)
+	req = req.WithContext(context.WithValue(req.Context(), mw.UserIDKey, "owner1"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("want 502 got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCompleteRejectsEmptyObject(t *testing.T) {
+	h := NewPresignHandler(
+		&fakePresignStorage{},
+		&fakePub{}, &fakeMeta{id: "vid-1"},
+		&fakeOwnership{owner: "owner1"},
+	)
+	r := newChiRouter(h)
+	req := httptest.NewRequest("POST", "/api/v1/videos/vid-1/complete", nil)
+	req = req.WithContext(context.WithValue(req.Context(), mw.UserIDKey, "owner1"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCompleteRejectsNonVideoContentType(t *testing.T) {
+	h := NewPresignHandler(
+		&fakePresignStorage{statSize: 1024, statContentType: "text/html"},
+		&fakePub{}, &fakeMeta{id: "vid-1"},
+		&fakeOwnership{owner: "owner1"},
+	)
+	r := newChiRouter(h)
+	req := httptest.NewRequest("POST", "/api/v1/videos/vid-1/complete", nil)
+	req = req.WithContext(context.WithValue(req.Context(), mw.UserIDKey, "owner1"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 got %d %s", w.Code, w.Body.String())
+	}
 }

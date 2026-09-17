@@ -77,9 +77,9 @@ func (m *MinioClient) PresignedPutObjectExternal(ctx context.Context, key string
 	pubEndpoint := pub.Host
 	// If pubEndpoint lacks port, minio.New will default to 443/80; keep as is.
 	tmpClient, err := minio.New(pubEndpoint, &minio.Options{
-		Creds:       credentials.NewStaticV4(m.accessKey, m.secretKey, ""),
-		Secure:      pubSecure,
-		Region:      "us-east-1",
+		Creds:        credentials.NewStaticV4(m.accessKey, m.secretKey, ""),
+		Secure:       pubSecure,
+		Region:       "us-east-1",
 		BucketLookup: minio.BucketLookupPath,
 	})
 	if err != nil {
@@ -118,6 +118,16 @@ func (m *MinioClient) StatObjectSize(ctx context.Context, key string) (int64, er
 		return 0, fmt.Errorf("stat %s: %w", key, err)
 	}
 	return info.Size, nil
+}
+
+// StatObjectInfo returns size and content-type of the object (complete must
+// verify the uploaded object matches the presigned upload — issue #46).
+func (m *MinioClient) StatObjectInfo(ctx context.Context, key string) (int64, string, error) {
+	info, err := m.client.StatObject(ctx, m.bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		return 0, "", fmt.Errorf("stat %s: %w", key, err)
+	}
+	return info.Size, info.ContentType, nil
 }
 
 func (m *MinioClient) GetObject(ctx context.Context, key string) (io.ReadCloser, error) {

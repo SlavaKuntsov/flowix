@@ -81,10 +81,10 @@ func main() {
 	}
 	defer pub.Close()
 
-	metaCl := client.NewMetadataClient(metadataURL)
+	metaCl := client.NewMetadataClient(metadataURL, os.Getenv("INTERNAL_TOKEN"))
 	uh := handler.NewUploadHandler(store, pub, metaCl)
-	ph := handler.NewPresignHandler(store, pub, metaCl)
-	rh := handler.NewResumableHandler(store)
+	ph := handler.NewPresignHandler(store, pub, metaCl, metaCl)
+	rh := handler.NewResumableHandler(store, metaCl)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.Recoverer, mw.RequestLogger)

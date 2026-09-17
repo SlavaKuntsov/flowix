@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	mw "flowix/upload/internal/middleware"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -42,7 +43,6 @@ func (f *fakeResumableStorage) PutObject(ctx context.Context, key string, r io.R
 	return nil
 }
 
-
 func newResumableRouter(h *ResumableHandler) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/api/v1/videos/{id}/resumable", h.Status)
@@ -52,7 +52,7 @@ func newResumableRouter(h *ResumableHandler) http.Handler {
 
 func TestResumableStatusEmpty(t *testing.T) {
 	st := newFakeResumable()
-	h := NewResumableHandler(st)
+	h := NewResumableHandler(st, &fakeOwnership{})
 	r := newResumableRouter(h)
 	req := httptest.NewRequest("GET", "/api/v1/videos/vid1/resumable", nil)
 	w := httptest.NewRecorder()
@@ -67,7 +67,7 @@ func TestResumableStatusEmpty(t *testing.T) {
 
 func TestResumableUploadSingleChunk(t *testing.T) {
 	st := newFakeResumable()
-	h := NewResumableHandler(st)
+	h := NewResumableHandler(st, &fakeOwnership{})
 	r := newResumableRouter(h)
 	// first chunk 0-4/10
 	body := bytes.Repeat([]byte("a"), 5)
@@ -96,7 +96,7 @@ func TestResumableUploadSingleChunk(t *testing.T) {
 func TestResumableRangeMismatch(t *testing.T) {
 	st := newFakeResumable()
 	st.data["raw/vid1/original.mp4"] = bytes.Repeat([]byte("x"), 5)
-	h := NewResumableHandler(st)
+	h := NewResumableHandler(st, &fakeOwnership{})
 	r := newResumableRouter(h)
 	body := bytes.Repeat([]byte("a"), 5)
 	req := httptest.NewRequest("PUT", "/api/v1/videos/vid1/resumable", bytes.NewReader(body))
@@ -110,7 +110,7 @@ func TestResumableRangeMismatch(t *testing.T) {
 
 func TestResumableFullPutNoRange(t *testing.T) {
 	st := newFakeResumable()
-	h := NewResumableHandler(st)
+	h := NewResumableHandler(st, &fakeOwnership{})
 	r := newResumableRouter(h)
 	body := bytes.Repeat([]byte("z"), 7)
 	req := httptest.NewRequest("PUT", "/api/v1/videos/vid1/resumable", bytes.NewReader(body))
@@ -127,7 +127,7 @@ func TestResumableFullPutNoRange(t *testing.T) {
 func TestResumableFullPutTooLarge(t *testing.T) {
 	t.Setenv("UPLOAD_MAX_BYTES", "16")
 	st := newFakeResumable()
-	h := NewResumableHandler(st)
+	h := NewResumableHandler(st, &fakeOwnership{})
 	r := newResumableRouter(h)
 	body := bytes.Repeat([]byte("z"), 17)
 	req := httptest.NewRequest("PUT", "/api/v1/videos/vid1/resumable", bytes.NewReader(body))
@@ -144,7 +144,7 @@ func TestResumableFullPutTooLarge(t *testing.T) {
 func TestResumableChunkBodyTooLarge(t *testing.T) {
 	t.Setenv("UPLOAD_MAX_BYTES", "16")
 	st := newFakeResumable()
-	h := NewResumableHandler(st)
+	h := NewResumableHandler(st, &fakeOwnership{})
 	r := newResumableRouter(h)
 	// объявлен chunkSize=16 (= maxBytes), тело 17 байт → MaxBytesError при чтении
 	body := bytes.Repeat([]byte("a"), 17)
@@ -163,7 +163,7 @@ func TestResumableChunkBodyTooLarge(t *testing.T) {
 func TestResumableChunkTooLarge(t *testing.T) {
 	t.Setenv("UPLOAD_MAX_BYTES", "16")
 	st := newFakeResumable()
-	h := NewResumableHandler(st)
+	h := NewResumableHandler(st, &fakeOwnership{})
 	r := newResumableRouter(h)
 	// 8 bytes ok
 	body := bytes.Repeat([]byte("a"), 8)
@@ -185,5 +185,60 @@ func TestResumableChunkTooLarge(t *testing.T) {
 	}
 	if len(st.data["raw/vid1/original.mp4"]) != 8 {
 		t.Fatalf("want 8 bytes kept got %d", len(st.data["raw/vid1/original.mp4"]))
+	}
+}
+
+// IDOR (issue #46): a foreign video id must be rejected with 403.
+
+func TestResumableStatusForeignVideoForbidden(t *testing.T) {
+	h := NewResumableHandler(newFakeResumable(), &fakeOwnership{owner: "real-owner"})
+	r := newResumableRouter(h)
+	req := httptest.NewRequest("GET", "/api/v1/videos/vid1/resumable", nil)
+	req = req.WithContext(context.WithValue(req.Context(), mw.UserIDKey, "attacker"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("want 403 got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestResumableUploadForeignVideoForbidden(t *testing.T) {
+	st := newFakeResumable()
+	h := NewResumableHandler(st, &fakeOwnership{owner: "real-owner"})
+	r := newResumableRouter(h)
+	req := httptest.NewRequest("PUT", "/api/v1/videos/vid1/resumable", bytes.NewReader([]byte("evil")))
+	req = req.WithContext(context.WithValue(req.Context(), mw.UserIDKey, "attacker"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("want 403 got %d %s", w.Code, w.Body.String())
+	}
+	if len(st.data) != 0 {
+		t.Fatalf("object must not be stored, got %d keys", len(st.data))
+	}
+}
+
+func TestResumableUploadUnknownVideo(t *testing.T) {
+	h := NewResumableHandler(newFakeResumable(), &fakeOwnership{err: errFake("metadata owner status 404")})
+	r := newResumableRouter(h)
+	req := httptest.NewRequest("PUT", "/api/v1/videos/vid1/resumable", bytes.NewReader([]byte("x")))
+	req = req.WithContext(context.WithValue(req.Context(), mw.UserIDKey, "owner1"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404 got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestResumableUploadMetadataUnavailableForbidden(t *testing.T) {
+	// metadata unavailable -> fail closed (no ownership bypass)
+	h := NewResumableHandler(newFakeResumable(), &fakeOwnership{err: errFake("connection refused")})
+	r := newResumableRouter(h)
+	req := httptest.NewRequest("PUT", "/api/v1/videos/vid1/resumable", bytes.NewReader([]byte("x")))
+	req = req.WithContext(context.WithValue(req.Context(), mw.UserIDKey, "owner1"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("want 502 got %d %s", w.Code, w.Body.String())
 	}
 }

@@ -18,6 +18,7 @@ import (
 type PresignStorage interface {
 	PresignedPutObjectExternal(ctx context.Context, key string, expires time.Duration, publicEndpoint string) (string, error)
 	StatObject(ctx context.Context, key string) error
+	StatObjectInfo(ctx context.Context, key string) (int64, string, error)
 }
 
 // We use context.Context but avoid import cycle; interface matches storage.
@@ -41,10 +42,11 @@ type PresignHandler struct {
 	storage   PresignStorage
 	publisher Publisher
 	metadata  MetadataCreator
+	owner     OwnershipChecker
 }
 
-func NewPresignHandler(s PresignStorage, p Publisher, m MetadataCreator) *PresignHandler {
-	return &PresignHandler{storage: s, publisher: p, metadata: m}
+func NewPresignHandler(s PresignStorage, p Publisher, m MetadataCreator, o OwnershipChecker) *PresignHandler {
+	return &PresignHandler{storage: s, publisher: p, metadata: m, owner: o}
 }
 
 // Presign godoc
@@ -139,9 +141,23 @@ func (h *PresignHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"video_id required"}`, 400)
 		return
 	}
+	// IDOR (issue #46): only the owner may complete an upload for a video id.
+	if !requireOwnership(h.owner, videoID, ownerID, w) {
+		return
+	}
 	s3Key := fmt.Sprintf("raw/%s/original.mp4", videoID)
-	if err := h.storage.StatObject(r.Context(), s3Key); err != nil {
+	// Verify the uploaded object matches a real video PUT (issue #46).
+	size, contentType, err := h.storage.StatObjectInfo(r.Context(), s3Key)
+	if err != nil {
 		http.Error(w, `{"error":"object not found, upload via presigned URL first"}`, 404)
+		return
+	}
+	if size == 0 {
+		http.Error(w, `{"error":"empty object"}`, 400)
+		return
+	}
+	if contentType != "" && !strings.HasPrefix(contentType, "video/") {
+		http.Error(w, `{"error":"unexpected content type: `+contentType+`"}`, 400)
 		return
 	}
 	metrics.UploadBytes.Inc()
