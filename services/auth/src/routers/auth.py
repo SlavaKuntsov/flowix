@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_db
@@ -48,7 +49,12 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(409, "email already exists")
     user = User(email=body.email, password_hash=hash_password(body.password))
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # конкурентная регистрация той же почты (issue #49)
+        await db.rollback()
+        raise HTTPException(409, "email already exists")
     await db.refresh(user)
     return TokenResponse(
         access_token=create_access_token(str(user.id)),

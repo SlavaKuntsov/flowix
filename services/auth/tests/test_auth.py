@@ -80,6 +80,55 @@ def test_register_duplicate():
     assert r.status_code == 409
 
 
+def test_register_short_password_rejected():
+    # issue #49: password policy — min 8 chars
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=FakeResult(None))
+    c = client_with_mock(mock_db)
+    r = c.post("/api/v1/auth/register", json={"email": "short@example.com", "password": "short"})
+    clear_overrides()
+    assert r.status_code == 422
+    mock_db.add.assert_not_called()
+
+
+def test_register_email_normalized_lowercase():
+    # issue #49: A@x.com == a@x.com — store lowercase
+    from sqlalchemy.exc import IntegrityError
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=FakeResult(None))
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock(side_effect=IntegrityError("dup", None, Exception()))
+    mock_db.rollback = AsyncMock()
+    c = client_with_mock(mock_db)
+    r = c.post(
+        "/api/v1/auth/register", json={"email": "MiXeD@Example.COM", "password": "secret123"}
+    )
+    clear_overrides()
+    # конкурентный INSERT пойман как IntegrityError → 409, не 500
+    assert r.status_code == 409
+    added_user = mock_db.add.call_args[0][0]
+    assert added_user.email == "mixed@example.com"
+
+
+def test_login_email_normalized_lowercase():
+    # issue #49: логин с другим регистром находит пользователя (запрос lowercase)
+    u = fake_user(email="case@example.com", password="secret123")
+    mock_db = AsyncMock()
+    captured = {}
+
+    async def _execute(q):
+        captured["params"] = q.compile().params
+        return FakeResult(u)
+
+    mock_db.execute = AsyncMock(side_effect=_execute)
+    c = client_with_mock(mock_db)
+    r = c.post("/api/v1/auth/login", json={"email": "CASE@Example.com", "password": "secret123"})
+    clear_overrides()
+    assert r.status_code == 200
+    assert "case@example.com" in captured["params"].values()
+
+
 def test_login_success():
     u = fake_user(email="login@example.com", password="secret123")
     mock_db = AsyncMock()
