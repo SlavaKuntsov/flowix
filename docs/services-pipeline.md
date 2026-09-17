@@ -1,6 +1,6 @@
 # Flowix — сервисы и пайплайн приложения
 
-> Для ИИ-агентов: это главный документ про «зачем каждый сервис и как всё связано». ТЗ и стек — `docs/spec.md:1`, план по фазам — `docs/PLAN.md:1`. Гайдлайны поведения — `AGENTS.md:1`.
+> Для ИИ-агентов: это главный документ про «зачем каждый сервис и как всё связано». ТЗ и стек — `docs/spec.md:1`. Гайдлайны поведения — `AGENTS.md:1`.
 
 ## 1. Зачем вообще такая архитектура
 
@@ -97,7 +97,7 @@ Flowix — MVP видеоплатформы с адаптивным стрими
 - `video.uploaded {video_id: UUID, s3_key: string, owner_id: UUID}`
 - `video.transcoded {video_id: UUID, renditions: [{quality, s3_key, bitrate}], status: ready|failed}`
 
-Определены как Go struct + Pydantic — см. `docs/PLAN.md:73` и `deploy/postgres/init.sql:1`.
+Определены как Go struct + Pydantic — см. `deploy/postgres/init.sql:1`.
 
 ---
 
@@ -145,7 +145,6 @@ deploy/docker-compose.yml         — infra + все сервисы (healthcheck
 deploy/docker-compose.prod.yml    — prod overrides (CDN headers, limits)
 deploy/nginx/{nginx.conf,nginx.prod.conf,Dockerfile} — vod_mode mapped, CDN cache
 deploy/postgres/init.sql          — DDL users/videos/renditions
-docs/PLAN.md                      — 8 фаз план (0–8 завершены)
 docs/spec.md                      — полный архив ТЗ (бывший AGENTS.md)
 docs/SWAGGER.md                   — как генерить OpenAPI для Go
 docs/ZED.md                       — настройки Zed IDE

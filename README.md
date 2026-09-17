@@ -35,7 +35,7 @@
                                                      └─► PATCH /internal/videos/:id/status (X-Internal-Token) → metadata
 ```
 
-> Full breakdown: [`docs/services-pipeline.md`](docs/services-pipeline.md) (services & pipeline, RU) · Spec: [`docs/spec.md`](docs/spec.md) · Plan: [`docs/PLAN.md`](docs/PLAN.md) (Phases 9-11 DONE, 12 in progress)
+> Full breakdown: [`docs/services-pipeline.md`](docs/services-pipeline.md) (services & pipeline, RU) · Spec: [`docs/spec.md`](docs/spec.md)
 
 ## 🧩 Tech Stack
 
@@ -64,7 +64,7 @@
 │   ├── migrations/000001_init.up.sql # golang-migrate source of truth
 │   ├── postgres/init.sql           # legacy fallback
 │   └── nginx/{nginx.conf,nginx.prod.conf,Dockerfile} # envsubst INTERNAL_TOKEN
-├── docs/               # spec.md, services-pipeline.md, PLAN.md (Phases 9-11 DONE), ZED.md, SWAGGER.md
+├── docs/               # spec.md, services-pipeline.md, ZED.md, SWAGGER.md
 ├── scripts/e2e.sh      # upload → poll ready → master.m3u8 → ffprobe aligned segments → gateway HLS
 └── Makefile            # migrate-up/down/create, lint/test, e2e, swagger
 ```
@@ -116,18 +116,7 @@ Zed IDE auto-fix on save — see [`.zed/settings.json`](.zed/settings.json) and 
 
 ## 🗺 Roadmap
 
-- [x] Phase 0–1 — infra & DB schema (`deploy/migrations/000001_init.up.sql` golang-migrate, `init.sql` legacy)
-- [x] Phase 2 — Auth + Metadata (chi + FastAPI, JWT HS256/Argon2, `owner_email` JOIN)
-- [x] Phase 3 — Upload (multipart `MaxBytesReader 5GB` → MinIO raw + `video.uploaded`, `video/*` allowlist)
-- [x] Phase 4 — Transcoder (pika + FFmpeg, aligned GOP `-g fps*2 -force_key_frames`, shared `audio.m4a`, `heartbeat 600`)
-- [x] Phase 5 — Streaming nginx-vod JIT (`vod_mode mapped`, 3 MP4 → HLS, `vod_segment_duration 2000`, `INTERNAL_TOKEN` envsubst)
-- [x] Phase 6 — Gateway (reverse proxy, CORS, rate-limit, JWT, `InternalAuth` proxy, `MaxBytesReader`)
-- [x] Phase 7 — Frontend (Next 14, `hls.js` `maxBufferLength 4` seamless, `/watch/[id]` + `playbackRate` + owner badge + delete)
-- [x] Phase 8 — Integration & hardening (`scripts/e2e.sh` + `healthcheck` + `docker-compose.prod.yml` CDN)
-- [x] Phase 9 — Security & Upload streaming (P0) — `INTERNAL_TOKEN`, `MaxBytesReader 5GB`, `private` raw, `DELETE` + S3 cleanup
-- [x] Phase 10 — Transcoder limits & reliability (P0) — sequential, `threads 2` `veryfast`, `fps` preserve, `heartbeat 600`, `4G` limits
-- [ ] Phase 10b — Queue DLX/retries & idempotency → Phase 11 presigned multipart → Phase 12 adaptive ladder/HW accel (fan-out, NVENC)
-- See [`docs/PLAN.md`](docs/PLAN.md) — 15 phases, event contracts `video.uploaded` / `video.transcoded`
+Roadmap and tickets are tracked in the GitHub project.
 
 ## 🤝 Contributing
 
