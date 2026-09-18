@@ -1,8 +1,14 @@
+# Issue #63: build context = repo root (см. deploy/docker-compose.yml) —
+# рядом копируем общий модуль pkg/. go.work в образ не попадает: сборка
+# идёт per-module через replace flowix/pkg => ../../pkg.
 FROM golang:1.27-alpine AS builder
 WORKDIR /app
-COPY go.mod go.sum* ./
-RUN go mod download || true
-COPY . .
+COPY pkg/go.mod pkg/go.sum pkg/
+COPY services/upload/go.mod services/upload/go.sum services/upload/
+RUN cd /app/pkg && go mod download && cd /app/services/upload && go mod download
+COPY pkg/ pkg/
+COPY services/upload/ services/upload/
+WORKDIR /app/services/upload
 RUN CGO_ENABLED=0 go build -o /server ./cmd/server
 
 FROM alpine:3.19

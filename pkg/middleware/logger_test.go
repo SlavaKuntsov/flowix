@@ -25,7 +25,7 @@ func TestRequestLoggerPropagatesGeneratedRequestID(t *testing.T) {
 	defer restore()
 
 	var gotHeader string
-	h := chimw.RequestID(RequestLogger(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := chimw.RequestID(RequestLogger("gateway")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeader = r.Header.Get("X-Request-ID")
 		w.WriteHeader(http.StatusOK)
 	})))
@@ -50,7 +50,7 @@ func TestRequestLoggerKeepsClientRequestID(t *testing.T) {
 	defer restore()
 
 	var gotHeader string
-	h := chimw.RequestID(RequestLogger(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := chimw.RequestID(RequestLogger("metadata")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeader = r.Header.Get("X-Request-ID")
 		w.WriteHeader(http.StatusOK)
 	})))
@@ -65,5 +65,50 @@ func TestRequestLoggerKeepsClientRequestID(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"trace_id":"client-trace-1"`) {
 		t.Fatalf("client trace_id missing in log: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"service":"metadata"`) {
+		t.Fatalf("service tag missing in log: %s", buf.String())
+	}
+}
+
+// respWriter must expose http.Flusher to handlers behind the logging wrapper —
+// otherwise ReverseProxy (HLS) cannot flush streaming responses (issue #63).
+func TestRequestLoggerSupportsFlusher(t *testing.T) {
+	flushed := false
+	h := RequestLogger("upload")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer behind RequestLogger does not implement http.Flusher")
+		}
+		_, _ = w.Write([]byte("chunk"))
+		f.Flush()
+		flushed = true
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if !flushed {
+		t.Fatal("Flush was not called")
+	}
+	if w.Body.String() != "chunk" {
+		t.Fatalf("body lost through wrapper: %q", w.Body.String())
+	}
+}
+
+func TestRequestLoggerStatusCaptured(t *testing.T) {
+	buf, restore := captureLog(t)
+	defer restore()
+
+	h := RequestLogger("gateway")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if !strings.Contains(buf.String(), `"status":403`) {
+		t.Fatalf("status 403 missing in log: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"level":"warn"`) {
+		t.Fatalf("4xx must log at warn level: %s", buf.String())
 	}
 }

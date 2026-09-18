@@ -1,12 +1,13 @@
 package middleware
 
 import (
-	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
+
+	pkgmw "flowix/pkg/middleware"
 )
 
 // RateLimit — per-IP токен-бакет. Параметры:
@@ -64,7 +65,7 @@ func RateLimit(rps int, burst int) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			ip := clientIP(r)
+			ip := pkgmw.ClientIP(r)
 			lim := getLimiter(ip)
 			if !lim.Allow() {
 				w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -75,39 +76,4 @@ func RateLimit(rps int, burst int) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-func clientIP(r *http.Request) string {
-	// учитываем X-Forwarded-For (когда gateway за CDN / LB)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// берём первый IP
-		for i, c := range xff {
-			if c == ',' {
-				return trimSpace(xff[:i])
-			}
-		}
-		return trimSpace(xff)
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
-func trimSpace(s string) string {
-	// inline strings.TrimSpace без импорта strings для одного места,
-	// но проще импорт — оставим ручную версию для отсутствия extra import
-	start := 0
-	for start < len(s) && (s[start] == ' ' || s[start] == '\t') {
-		start++
-	}
-	end := len(s)
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
-	}
-	return s[start:end]
 }

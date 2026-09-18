@@ -139,9 +139,10 @@ func TestOptionalAuthStripsForgedUserID(t *testing.T) {
 
 func TestOptionalAuthSetsUserIDFromJWT(t *testing.T) {
 	secret := "test-secret"
-	var sawHeader string
+	var sawHeader, sawCtx string
 	h := OptionalAuth(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawHeader = r.Header.Get("X-User-ID")
+		sawCtx = UserIDFromCtx(r.Context())
 		w.WriteHeader(200)
 	}))
 	req := httptest.NewRequest("GET", "/", nil)
@@ -149,8 +150,8 @@ func TestOptionalAuthSetsUserIDFromJWT(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+mustToken(secret, "u1"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
-	if w.Code != 200 || sawHeader != "u1" {
-		t.Fatalf("valid JWT must set X-User-ID=u1, got %q (code %d)", sawHeader, w.Code)
+	if w.Code != 200 || sawHeader != "u1" || sawCtx != "u1" {
+		t.Fatalf("valid JWT must set X-User-ID=u1, got header %q ctx %q (code %d)", sawHeader, sawCtx, w.Code)
 	}
 }
 
@@ -197,5 +198,18 @@ func TestOptionalAuthRejectsRefreshToken(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != 200 || !called || sawHeader != "" {
 		t.Fatalf("refresh token must be anonymous, got code %d called %v header %q", w.Code, called, sawHeader)
+	}
+}
+
+func TestClientIPForwardedFor(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Forwarded-For", " 203.0.113.7 , 10.0.0.1")
+	if got := ClientIP(r); got != "203.0.113.7" {
+		t.Fatalf("want first XFF ip, got %q", got)
+	}
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.Header.Set("X-Real-IP", "198.51.100.2")
+	if got := ClientIP(r2); got != "198.51.100.2" {
+		t.Fatalf("want X-Real-IP, got %q", got)
 	}
 }

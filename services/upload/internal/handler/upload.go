@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"flowix/upload/internal/metrics"
-	mw "flowix/upload/internal/middleware"
+	"flowix/pkg/metrics"
+	mw "flowix/pkg/middleware"
 )
 
 // UploadHandler dependencies as interfaces — T3 stepwise fakes without MinIO/RabbitMQ.

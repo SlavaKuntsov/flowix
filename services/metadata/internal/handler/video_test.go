@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"flowix/metadata/internal/middleware"
 	"flowix/metadata/internal/model"
+
+	pkgmw "flowix/pkg/middleware"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
@@ -142,13 +143,13 @@ func testRouter(store VideoStore) chi.Router {
 	vh := NewVideoHandler(store)
 	// protected
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.AuthMiddleware(testSecret))
+		r.Use(pkgmw.AuthMiddleware(testSecret))
 		r.Post("/api/v1/videos", vh.Create)
 		r.Patch("/api/v1/videos/{id}", vh.Update)
 		r.Delete("/api/v1/videos/{id}", vh.Delete)
 	})
 	// public GET — optional JWT, как в cmd/server/main.go (issue #44)
-	optAuth := middleware.OptionalAuth(testSecret)
+	optAuth := pkgmw.OptionalAuth(testSecret)
 	r.With(optAuth).Get("/api/v1/videos", vh.List)
 	r.With(optAuth).Get("/api/v1/videos/{id}", vh.Get)
 	r.Patch("/internal/videos/{id}/status", vh.UpdateStatus)

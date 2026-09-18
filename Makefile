@@ -41,27 +41,27 @@ build:
 	$(COMPOSE) build
 
 # Go — локально если установлено, иначе через Docker (golang:1.27, golangci-lint)
-# Каждый сервис — отдельный go.mod, поэтому линтим per-service
+# Каждый модуль — отдельный go.mod (pkg + сервисы), поэтому линтим per-module
 lint-go:
-	@for svc in metadata gateway upload; do \
-	  echo "==> lint $$svc"; \
+	@for dir in pkg services/metadata services/gateway services/upload; do \
+	  echo "==> lint $$dir"; \
 	  if which golangci-lint >/dev/null 2>&1; then \
-	    (cd services/$$svc && golangci-lint run ./...) || exit 1; \
+	    (cd $$dir && golangci-lint run ./...) || exit 1; \
 	  else \
-	    docker run --rm -v $(PWD):/app -w /app/services/$$svc golangci/golangci-lint:latest golangci-lint run ./... || exit 1; \
+	    docker run --rm -v $(PWD):/app -w /app/$$dir golangci/golangci-lint:latest golangci-lint run ./... || exit 1; \
 	  fi; \
 	done
 
 fmt-go:
-	@which gofmt >/dev/null 2>&1 && gofmt -w services/ || docker run --rm -v $(PWD):/app -w /app golang:1.27-alpine gofmt -w ./services
+	@which gofmt >/dev/null 2>&1 && gofmt -w services/ pkg/ || docker run --rm -v $(PWD):/app -w /app golang:1.27-alpine gofmt -w ./services ./pkg
 
 test-go:
-	@for svc in metadata gateway upload; do \
-	  echo "==> test $$svc"; \
+	@for dir in pkg services/metadata services/gateway services/upload; do \
+	  echo "==> test $$dir"; \
 	  if which go >/dev/null 2>&1; then \
-	    (cd services/$$svc && go test ./...) || exit 1; \
+	    (cd $$dir && go test ./...) || exit 1; \
 	  else \
-	    docker run --rm -v $(PWD):/app -w /app/services/$$svc golang:1.27-alpine go test ./... || exit 1; \
+	    docker run --rm -v $(PWD):/app -w /app/$$dir golang:1.27-alpine go test ./... || exit 1; \
 	  fi; \
 	done
 

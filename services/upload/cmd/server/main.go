@@ -13,19 +13,18 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 
+	pkghttp "flowix/pkg/httpserver"
+	pkglogger "flowix/pkg/logger"
+	"flowix/pkg/metrics"
+	pkgmw "flowix/pkg/middleware"
 	_ "flowix/upload/docs"
 	"flowix/upload/internal/client"
 	"flowix/upload/internal/handler"
-	"flowix/upload/internal/metrics"
-	mw "flowix/upload/internal/middleware"
 	"flowix/upload/internal/queue"
 	"flowix/upload/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/rs/zerolog"
-	zlog "github.com/rs/zerolog/log"
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
@@ -55,18 +54,8 @@ func main() {
 	minioSecret := os.Getenv("MINIO_SECRET_KEY")
 
 	secure, _ := strconv.ParseBool(os.Getenv("MINIO_SECURE"))
-	if strings.ToLower(os.Getenv("LOG_FORMAT")) == "console" || os.Getenv("ENV") == "dev" {
-		zlog.Logger = zlog.Output(zerolog.ConsoleWriter{Out: os.Stdout})
-	} else {
-		zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	}
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {
-		if l, err := zerolog.ParseLevel(lvl); err == nil {
-			zerolog.SetGlobalLevel(l)
-		}
-	}
-	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+	// zerolog console in dev, json in prod — общий bootstrap (issue #63)
+	logger := pkglogger.Setup("upload")
 
 	store, err := storage.NewMinioClient(minioEndpoint, minioAccess, minioSecret, bucket, secure)
 	if err != nil {
@@ -84,7 +73,7 @@ func main() {
 	rh := handler.NewResumableHandler(store, metaCl)
 
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, middleware.Recoverer, mw.RequestLogger)
+	r.Use(middleware.RequestID, middleware.Recoverer, pkgmw.RequestLogger("upload"))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -97,7 +86,7 @@ func main() {
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(mw.AuthMiddleware(jwtSecret))
+		r.Use(pkgmw.AuthMiddleware(jwtSecret))
 		r.Post("/api/v1/videos/upload", uh.Upload)
 		r.Post("/api/v1/videos/presign", ph.Presign)
 		r.Post("/api/v1/videos/{id}/complete", ph.Complete)
@@ -107,7 +96,10 @@ func main() {
 	})
 
 	logger.Info().Str("port", port).Str("bucket", bucket).Str("metadata", metadataURL).Msg("upload starting")
-	if err := http.ListenAndServe(":"+port, r); err != nil {
+	// Streaming(): тела до 5 ГБ не влезают в Read/Write timeout — лимитируем
+	// только заголовки; Run делает graceful shutdown, in-flight загрузки
+	// не обрываются (issue #63).
+	if err := pkghttp.Run(":"+port, r, pkghttp.Streaming()); err != nil {
 		log.Fatal(err)
 	}
 }

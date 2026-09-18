@@ -10,6 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+
+	pkgmw "flowix/pkg/middleware"
 )
 
 var hlsPathRe = regexp.MustCompile(`/hls/([0-9a-fA-F-]{36})`)
@@ -230,7 +232,7 @@ func HLSTokenHandler(jwtSecret, internalToken, metadataURL string) http.HandlerF
 				}
 			}
 		}
-		userID := UserIDFromCtx(r.Context())
+		userID := pkgmw.UserIDFromCtx(r.Context())
 		if userID == "" {
 			// try via Authorization parsing as fallback (if middleware not applied)
 			if sub, ok := validateAccessToken(r, jwtSecret); ok {

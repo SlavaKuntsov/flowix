@@ -6,7 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 )
+
+// metadataClientTimeout — исходящие вызовы в metadata (create/owner) —
+// маленькие JSON, без таймаута клиент висел вечно (issue #63).
+const metadataClientTimeout = 10 * time.Second
 
 type MetadataClient struct {
 	baseURL       string
@@ -15,7 +20,7 @@ type MetadataClient struct {
 }
 
 func NewMetadataClient(baseURL, internalToken string) *MetadataClient {
-	return &MetadataClient{baseURL: baseURL, internalToken: internalToken, client: &http.Client{}}
+	return &MetadataClient{baseURL: baseURL, internalToken: internalToken, client: &http.Client{Timeout: metadataClientTimeout}}
 }
 
 type CreateVideoResponse struct {

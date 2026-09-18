@@ -178,7 +178,10 @@ services:
       start_period: 15s
 
   metadata:
-    build: ../services/metadata
+    # issue #63: context = repo root — Dockerfile копирует общий модуль pkg/
+    build:
+      context: ..
+      dockerfile: services/metadata/Dockerfile
     environment:
       DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
       DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
@@ -208,7 +211,11 @@ services:
       start_period: 10s
 
   upload:
-    build: ../services/upload
+    # issue #63: context = repo root; graceful shutdown ждёт in-flight загрузки
+    stop_grace_period: 5m
+    build:
+      context: ..
+      dockerfile: services/upload/Dockerfile
     environment:
       DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
       RABBITMQ_URL: amqp://flowix:flowix@rabbitmq:5672/
@@ -221,6 +228,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env (see .env.example)}
       UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-5368709120}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      # grace для Shutdown меньше stop_grace_period (issue #63)
+      SHUTDOWN_GRACE: 4m
     ports:
       - "${UPLOAD_PORT:-8003}:8003"
     depends_on:
@@ -275,7 +284,11 @@ services:
       start_period: 20s
 
   gateway:
-    build: ../services/gateway
+    # issue #63: context = repo root; graceful shutdown ждёт in-flight загрузки
+    stop_grace_period: 5m
+    build:
+      context: ..
+      dockerfile: services/gateway/Dockerfile
     environment:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env (see .env.example)}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:?INTERNAL_TOKEN is required — set it in .env (see .env.example)}
@@ -284,6 +297,8 @@ services:
       METADATA_URL: http://metadata:8002
       UPLOAD_URL: http://upload:8003
       VOD_URL: http://nginx-vod:80
+      # grace для Shutdown меньше stop_grace_period (issue #63)
+      SHUTDOWN_GRACE: 4m
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     depends_on:
