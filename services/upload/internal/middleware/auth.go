@@ -24,7 +24,7 @@ func AuthMiddleware(secret string) func(http.Handler) http.Handler {
 			tokenStr := strings.TrimPrefix(h, "Bearer ")
 			token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 				return []byte(secret), nil
-			}, jwt.WithValidMethods([]string{"HS256"}))
+			}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 			if err != nil || !token.Valid {
 				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 				return
@@ -37,6 +37,11 @@ func AuthMiddleware(secret string) func(http.Handler) http.Handler {
 			sub, _ := claims["sub"].(string)
 			if sub == "" {
 				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+				return
+			}
+			// тип токена обязан быть access (issue #53: обязательные exp и type)
+			if typ, _ := claims["type"].(string); typ != "access" {
+				http.Error(w, `{"error":"invalid token type"}`, http.StatusUnauthorized)
 				return
 			}
 			ctx := context.WithValue(r.Context(), UserIDKey, sub)

@@ -1,12 +1,15 @@
 import json
 import logging
+import os
 import sys
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from .core.config import JWT_SECRET_PLACEHOLDER, settings
 from .core.limiter import limiter
 from .routers.auth import router
 
@@ -30,7 +33,29 @@ try:
 except ImportError:
     METRICS_ENABLED = False
 
-app = FastAPI(title="flowix-auth", version="0.1.0")
+
+def validate_secrets() -> None:
+    """Fail fast on an empty or placeholder JWT_SECRET at startup (issue #53).
+
+    Called from the app lifespan (not at import) so unit tests with the default
+    settings keep working. ENV=dev bypasses the check for local runs.
+    """
+    if os.getenv("ENV", "") == "dev":
+        return
+    if settings.jwt_secret in ("", JWT_SECRET_PLACEHOLDER):
+        raise RuntimeError(
+            "JWT_SECRET is empty or placeholder — set a real secret in .env "
+            "(see .env.example). Set ENV=dev to bypass for local development."
+        )
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
+    validate_secrets()
+    yield
+
+
+app = FastAPI(title="flowix-auth", version="0.1.0", lifespan=_lifespan)
 # CORS handled by gateway (single entry point) to avoid duplicate
 # Access-Control-Allow-Origin headers (gateway sets origin, upstream must not).
 # Auth is behind gateway; direct :8001 access is internal/Swagger only.

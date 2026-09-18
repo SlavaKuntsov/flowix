@@ -19,7 +19,11 @@ import (
 const testSecret = "test-secret-32chars-for-unit-tests-!!"
 
 func signToken(sub string) string {
-	t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": sub})
+	t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":  sub,
+		"type": "access",
+		"exp":  time.Now().Add(time.Hour).Unix(),
+	})
 	s, _ := t.SignedString([]byte(testSecret))
 	return s
 }

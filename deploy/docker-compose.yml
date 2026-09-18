@@ -131,7 +131,7 @@ services:
   nginx-vod:
     build: ./nginx
     environment:
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?INTERNAL_TOKEN is required — set it in .env (see .env.example)}
     depends_on:
       minio:
         condition: service_healthy
@@ -156,7 +156,7 @@ services:
       DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
       PGBOUNCER_ENABLED: ${PGBOUNCER_ENABLED:-false}
       RABBITMQ_URL: amqp://flowix:flowix@rabbitmq:5672/
-      JWT_SECRET: ${JWT_SECRET}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env (see .env.example)}
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
@@ -183,8 +183,8 @@ services:
       DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
       DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
       PGBOUNCER_ENABLED: ${PGBOUNCER_ENABLED:-false}
-      JWT_SECRET: ${JWT_SECRET}
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env (see .env.example)}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?INTERNAL_TOKEN is required — set it in .env (see .env.example)}
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
@@ -217,8 +217,8 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       VIDEO_STORAGE_BUCKET: ${VIDEO_STORAGE_BUCKET:-videos}
       METADATA_URL: http://metadata:8002
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
-      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?INTERNAL_TOKEN is required — set it in .env (see .env.example)}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env (see .env.example)}
       UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-5368709120}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
     ports:
@@ -249,7 +249,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       VIDEO_STORAGE_BUCKET: ${VIDEO_STORAGE_BUCKET:-videos}
       METADATA_URL: http://metadata:8002
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?INTERNAL_TOKEN is required — set it in .env (see .env.example)}
       FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
       FFMPEG_PRESET: ${FFMPEG_PRESET:-veryfast}
       ENCODE_MODE: ${ENCODE_MODE:-cbr}
@@ -277,8 +277,8 @@ services:
   gateway:
     build: ../services/gateway
     environment:
-      JWT_SECRET: ${JWT_SECRET}
-      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env (see .env.example)}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?INTERNAL_TOKEN is required — set it in .env (see .env.example)}
       UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-5368709120}
       AUTH_URL: http://auth:8001
       METADATA_URL: http://metadata:8002

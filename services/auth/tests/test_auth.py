@@ -211,6 +211,23 @@ def test_refresh_token_without_exp_rejected():
     assert r.status_code == 401
 
 
+def test_validate_secrets_fail_fast(monkeypatch):
+    # issue #53: empty/placeholder JWT_SECRET must fail at startup, ENV=dev bypasses
+    import pytest
+
+    from src.core.config import JWT_SECRET_PLACEHOLDER
+    from src.main import validate_secrets
+
+    monkeypatch.delenv("ENV", raising=False)
+    with pytest.raises(RuntimeError):
+        validate_secrets()
+    monkeypatch.setenv("JWT_SECRET", JWT_SECRET_PLACEHOLDER)
+    with pytest.raises(RuntimeError):
+        validate_secrets()
+    monkeypatch.setenv("ENV", "dev")
+    validate_secrets()  # dev bypass — no exception
+
+
 def test_refresh_success():
     uid = str(uuid.uuid4())
     refresh = create_refresh_token(uid)

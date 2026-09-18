@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	mw "flowix/upload/internal/middleware"
 
@@ -18,7 +19,11 @@ import (
 const secret = "test-secret-32chars-for-upload-tests!!"
 
 func token(sub string) string {
-	t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": sub})
+	t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":  sub,
+		"type": "access",
+		"exp":  time.Now().Add(time.Hour).Unix(),
+	})
 	s, _ := t.SignedString([]byte(secret))
 	return s
 }
