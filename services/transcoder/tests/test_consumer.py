@@ -1,6 +1,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import app.consumer as cons
 
 
@@ -357,5 +359,85 @@ def test_process_message_no_delete_when_metadata_update_fails(monkeypatch):
         patch("app.consumer.transcode_thumbnail_from_rendition", return_value=None),
         patch("os.path.exists", return_value=False),
     ):
-        cons.process_message(body)
+        # issue #50: failed ready update must raise so handle_message retries / DLQs
+        # instead of acking a video that stays "processing" forever
+        with pytest.raises(RuntimeError, match="metadata ready update failed"):
+            cons.process_message(body)
         fake_minio.remove_object.assert_not_called()
+
+
+def _handle_message_channel(delivery_tag=1):
+    ch = MagicMock()
+    method = MagicMock(delivery_tag=delivery_tag)
+    return ch, method
+
+
+def test_handle_message_acks_after_success():
+    ch, method = _handle_message_channel()
+    body = json.dumps({"video_id": "vid-1", "s3_key": "raw/vid-1/original.mp4"}).encode()
+    with patch("app.consumer.process_message") as mock_proc:
+        cons.handle_message(ch, method, MagicMock(headers={}), body)
+        mock_proc.assert_called_once_with(body)
+        ch.basic_ack.assert_called_once_with(delivery_tag=1)
+        ch.basic_publish.assert_not_called()
+        ch.basic_nack.assert_not_called()
+
+
+def test_handle_message_metadata_failure_retries_and_does_not_ack_silently():
+    # issue #50 verify: metadata update failed -> retry-queue republish, not a plain ack
+    ch, method = _handle_message_channel()
+    body = json.dumps({"video_id": "vid-1", "s3_key": "raw/vid-1/original.mp4"}).encode()
+    with (
+        patch(
+            "app.consumer.process_message",
+            side_effect=RuntimeError("metadata ready update failed for vid-1"),
+        ) as mock_proc,
+    ):
+        cons.handle_message(ch, method, MagicMock(headers={}), body)
+        mock_proc.assert_called_once_with(body)
+        assert ch.basic_publish.call_count == 1
+        pub_kwargs = ch.basic_publish.call_args[1]
+        assert pub_kwargs["routing_key"] == cons.RETRY_QUEUE
+        assert pub_kwargs["properties"].headers["x-retry-count"] == 1
+        ch.basic_ack.assert_called_once_with(delivery_tag=1)
+        ch.basic_nack.assert_not_called()
+
+
+def test_handle_message_respects_incoming_retry_count():
+    ch, method = _handle_message_channel()
+    body = json.dumps({"video_id": "vid-1", "s3_key": "raw/vid-1/original.mp4"}).encode()
+    props = MagicMock(headers={"x-retry-count": 2})
+    with patch("app.consumer.process_message", side_effect=Exception("boom")):
+        cons.handle_message(ch, method, props, body)
+        pub_kwargs = ch.basic_publish.call_args[1]
+        assert pub_kwargs["properties"].headers["x-retry-count"] == 3
+
+
+def test_handle_message_publish_failure_marks_failed_and_dlqs():
+    # retry publish itself fails (e.g. broker error) -> mark failed, dead-letter, no ack
+    ch, method = _handle_message_channel(delivery_tag=3)
+    body = json.dumps({"video_id": "vid-1", "s3_key": "raw/vid-1/original.mp4"}).encode()
+    ch.basic_publish.side_effect = Exception("broker down")
+    with (
+        patch("app.consumer.process_message", side_effect=Exception("boom")),
+        patch("app.consumer.update_status") as mock_status,
+    ):
+        cons.handle_message(ch, method, MagicMock(headers={}), body)
+        mock_status.assert_called_once_with("vid-1", "failed")
+        ch.basic_nack.assert_called_once_with(delivery_tag=3, requeue=False)
+        ch.basic_ack.assert_not_called()
+
+
+def test_handle_message_moves_to_dlq_after_max_retries():
+    ch, method = _handle_message_channel(delivery_tag=7)
+    body = json.dumps({"video_id": "vid-1", "s3_key": "raw/vid-1/original.mp4"}).encode()
+    props = MagicMock(headers={"x-retry-count": cons.MAX_RETRIES})
+    with (
+        patch("app.consumer.process_message", side_effect=Exception("boom")),
+        patch("app.consumer.update_status") as mock_status,
+    ):
+        cons.handle_message(ch, method, props, body)
+        mock_status.assert_called_once_with("vid-1", "failed")
+        ch.basic_nack.assert_called_once_with(delivery_tag=7, requeue=False)
+        ch.basic_ack.assert_not_called()
+        ch.basic_publish.assert_not_called()
