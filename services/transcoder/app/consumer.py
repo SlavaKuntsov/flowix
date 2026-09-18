@@ -830,8 +830,15 @@ def process_message(body: bytes):
                 thumb_key = None
 
     ok = update_status(video_id, "ready", renditions, thumb_key)
+    if not ok:
+        # ack must follow a successful metadata update — raise so the consumer
+        # sends the message to the retry queue / DLQ instead of acking a video
+        # that would stay "processing" forever. Retry re-runs the whole pipeline
+        # even though renditions are already uploaded (bounded by MAX_RETRIES);
+        # re-uploads are idempotent per rendition key.
+        raise RuntimeError(f"metadata ready update failed for {video_id}")
     # Phase 15 cost: delete raw only after metadata confirmed ready. Non-fatal; lifecycle 7d is safety net.
-    if ok and not KEEP_RAW:
+    if not KEEP_RAW:
         try:
             mc.remove_object(BUCKET, s3_key)
             log.info("cleaned raw s3://%s/%s after ready (KEEP_RAW=false)", BUCKET, s3_key)
@@ -861,6 +868,72 @@ def _get_status(video_id: str) -> str | None:
     except Exception:
         pass
     return None
+
+
+def handle_message(ch, method, properties, body):
+    """Ack only after process_message succeeds (including the ready metadata update).
+
+    On failure: republish to the retry queue while retries remain, otherwise
+    mark failed and basic_nack(requeue=False) so the broker dead-letters to DLQ.
+    Module-level so retry/DLQ behavior stays testable (issue #50).
+    """
+    headers = {}
+    if properties and getattr(properties, "headers", None):
+        headers = properties.headers or {}
+    retry_count = 0
+    if headers:
+        try:
+            retry_count = int(headers.get("x-retry-count", 0) or 0)
+        except Exception:
+            retry_count = 0
+    try:
+        process_message(body)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+    except Exception as e:
+        log.exception("process failed: %s", e)
+        if retry_count < MAX_RETRIES:
+            try:
+                new_headers = dict(headers) if headers else {}
+                new_headers["x-retry-count"] = retry_count + 1
+                props = pika.BasicProperties(
+                    delivery_mode=2,
+                    headers=new_headers,
+                    content_type="application/json",
+                )
+                ch.basic_publish(
+                    exchange="",
+                    routing_key=RETRY_QUEUE,
+                    body=body,
+                    properties=props,
+                )
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                log.info(
+                    "requeued to %s %d/%d (retry %d)",
+                    RETRY_QUEUE,
+                    retry_count + 1,
+                    MAX_RETRIES,
+                    retry_count + 1,
+                )
+            except Exception as pub_e:
+                log.exception("retry publish failed: %s", pub_e)
+                try:
+                    data = json.loads(body)
+                    vid = data.get("video_id")
+                    if vid:
+                        update_status(vid, "failed")
+                except Exception:
+                    pass
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        else:
+            try:
+                data = json.loads(body)
+                vid = data.get("video_id")
+                if vid:
+                    update_status(vid, "failed")
+            except Exception:
+                pass
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            log.error("moved to DLQ %s after %d retries", DLQ, MAX_RETRIES)
 
 
 def main():
@@ -910,67 +983,7 @@ def main():
                     continue
                 raise
             channel.basic_qos(prefetch_count=1)
-
-            def on_message(ch, method, properties, body):
-                headers = {}
-                if properties and getattr(properties, "headers", None):
-                    headers = properties.headers or {}
-                retry_count = 0
-                if headers:
-                    try:
-                        retry_count = int(headers.get("x-retry-count", 0) or 0)
-                    except Exception:
-                        retry_count = 0
-                try:
-                    process_message(body)
-                    ch.basic_ack(delivery_tag=method.delivery_tag)
-                except Exception as e:
-                    log.exception("process failed: %s", e)
-                    if retry_count < MAX_RETRIES:
-                        try:
-                            new_headers = dict(headers) if headers else {}
-                            new_headers["x-retry-count"] = retry_count + 1
-                            props = pika.BasicProperties(
-                                delivery_mode=2,
-                                headers=new_headers,
-                                content_type="application/json",
-                            )
-                            ch.basic_publish(
-                                exchange="",
-                                routing_key=RETRY_QUEUE,
-                                body=body,
-                                properties=props,
-                            )
-                            ch.basic_ack(delivery_tag=method.delivery_tag)
-                            log.info(
-                                "requeued to %s %d/%d (retry %d)",
-                                RETRY_QUEUE,
-                                retry_count + 1,
-                                MAX_RETRIES,
-                                retry_count + 1,
-                            )
-                        except Exception as pub_e:
-                            log.exception("retry publish failed: %s", pub_e)
-                            try:
-                                data = json.loads(body)
-                                vid = data.get("video_id")
-                                if vid:
-                                    update_status(vid, "failed")
-                            except Exception:
-                                pass
-                            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-                    else:
-                        try:
-                            data = json.loads(body)
-                            vid = data.get("video_id")
-                            if vid:
-                                update_status(vid, "failed")
-                        except Exception:
-                            pass
-                        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-                        log.error("moved to DLQ %s after %d retries", DLQ, MAX_RETRIES)
-
-            channel.basic_consume(queue=QUEUE, on_message_callback=on_message)
+            channel.basic_consume(queue=QUEUE, on_message_callback=handle_message)
             log.info(
                 "consumer ready, waiting for %s (threads=%s preset=%s)",
                 QUEUE,
