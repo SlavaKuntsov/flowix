@@ -34,10 +34,7 @@ func main() {
 	if port == "" {
 		port = "8003"
 	}
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		jwtSecret = "change-me-super-secret-jwt-key-32chars"
-	}
+	jwtSecret := requireEnv("JWT_SECRET")
 	minioEndpoint := os.Getenv("MINIO_ENDPOINT")
 	if minioEndpoint == "" {
 		minioEndpoint = "minio:9000"
@@ -81,7 +78,7 @@ func main() {
 	}
 	defer pub.Close()
 
-	metaCl := client.NewMetadataClient(metadataURL, os.Getenv("INTERNAL_TOKEN"))
+	metaCl := client.NewMetadataClient(metadataURL, requireEnv("INTERNAL_TOKEN"))
 	uh := handler.NewUploadHandler(store, pub, metaCl)
 	ph := handler.NewPresignHandler(store, pub, metaCl, metaCl)
 	rh := handler.NewResumableHandler(store, metaCl)
@@ -113,4 +110,14 @@ func main() {
 	if err := http.ListenAndServe(":"+port, r); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// requireEnv reads a mandatory env var and exits with a clear error when it is
+// empty — unless ENV=dev (local `make dev-*` runs without .env, issue #53).
+func requireEnv(k string) string {
+	v := os.Getenv(k)
+	if v == "" && os.Getenv("ENV") != "dev" {
+		log.Fatalf("required environment variable %s is empty — set it in .env (see .env.example)", k)
+	}
+	return v
 }

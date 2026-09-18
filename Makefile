@@ -94,8 +94,9 @@ sync-py:
 	uv sync --project services/transcoder
 
 # local dev via uv / go (требует Go 1.27 локально, иначе используй docker compose up)
+# ENV=dev — bypass fail-fast на пустых JWT_SECRET/INTERNAL_TOKEN (issue #53)
 dev-auth:
-	uv run --project services/auth uvicorn src.main:app --reload --port 8001
+	ENV=dev uv run --project services/auth uvicorn src.main:app --reload --port 8001
 
 dev-transcoder:
 	uv run --project services/transcoder python -m app.consumer
@@ -103,13 +104,13 @@ dev-transcoder-celery: # legacy, Phase 10 — celery deprecated, use dev-transco
 	uv run --project services/transcoder celery -A app.celery_app worker --loglevel=info
 
 dev-metadata:
-	set -a; . ./.env 2>/dev/null || true; cd services/metadata && go run ./cmd/server
+	set -a; . ./.env 2>/dev/null || true; export ENV=dev; cd services/metadata && go run ./cmd/server
 
 dev-upload:
-	set -a; . ./.env 2>/dev/null || true; cd services/upload && go run ./cmd/server
+	set -a; . ./.env 2>/dev/null || true; export ENV=dev; cd services/upload && go run ./cmd/server
 
 dev-gateway:
-	set -a; . ./.env 2>/dev/null || true; cd services/gateway && go run ./cmd/server
+	set -a; . ./.env 2>/dev/null || true; export ENV=dev; cd services/gateway && go run ./cmd/server
 
 dev-frontend:
 	cd frontend && npm run dev

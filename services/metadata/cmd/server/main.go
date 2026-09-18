@@ -53,11 +53,8 @@ func main() {
 		dbURL = strings.ReplaceAll(dbURL, "localhost:", "pgbouncer:")
 		dbURL = strings.ReplaceAll(dbURL, "127.0.0.1:", "pgbouncer:")
 	}
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		jwtSecret = "change-me-super-secret-jwt-key-32chars"
-	}
-	internalToken := os.Getenv("INTERNAL_TOKEN")
+	jwtSecret := requireEnv("JWT_SECRET")
+	internalToken := requireEnv("INTERNAL_TOKEN")
 	minioEndpoint := os.Getenv("MINIO_ENDPOINT")
 	if minioEndpoint == "" {
 		minioEndpoint = "minio:9000"
@@ -214,4 +211,15 @@ func shouldPretty(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// requireEnv reads a mandatory env var and exits with a clear error when it is
+// empty — unless ENV=dev (local `make dev-*` runs without .env, issue #53).
+// Empty INTERNAL_TOKEN previously left /internal/* metadata open.
+func requireEnv(k string) string {
+	v := os.Getenv(k)
+	if v == "" && os.Getenv("ENV") != "dev" {
+		log.Fatalf("required environment variable %s is empty — set it in .env (see .env.example)", k)
+	}
+	return v
 }

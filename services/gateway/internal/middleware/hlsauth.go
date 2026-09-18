@@ -40,7 +40,7 @@ func GenerateHLSToken(videoID, userID, secret string) (string, error) {
 func validateHLSToken(tokenStr, expectedVideoID, secret string) (string, bool) {
 	tok, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 		return []byte(secret), nil
-	}, jwt.WithValidMethods([]string{"HS256"}))
+	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 	if err != nil || !tok.Valid {
 		return "", false
 	}
@@ -69,7 +69,7 @@ func validateAccessToken(r *http.Request, secret string) (string, bool) {
 	tokenStr := strings.TrimPrefix(h, "Bearer ")
 	tok, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 		return []byte(secret), nil
-	}, jwt.WithValidMethods([]string{"HS256"}))
+	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 	if err != nil || !tok.Valid {
 		return "", false
 	}
@@ -77,7 +77,8 @@ func validateAccessToken(r *http.Request, secret string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if typ, _ := claims["type"].(string); typ != "" && typ != "access" {
+	// тип токена обязан быть access (issue #53)
+	if typ, _ := claims["type"].(string); typ != "access" {
 		return "", false
 	}
 	sub, _ := claims["sub"].(string)

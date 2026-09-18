@@ -31,8 +31,8 @@ type routerConfig struct {
 
 func main() {
 	port := envOr("GATEWAY_PORT", "8080")
-	jwtSecret := envOr("JWT_SECRET", "change-me-super-secret-jwt-key-32chars")
-	internalToken := envOr("INTERNAL_TOKEN", "")
+	jwtSecret := requireEnv("JWT_SECRET")
+	internalToken := requireEnv("INTERNAL_TOKEN")
 	uploadMaxBytes := int64(5 << 30) // 5GB default for Phase 9
 	if v := envOr("UPLOAD_MAX_BYTES", ""); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
@@ -216,4 +216,14 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// requireEnv reads a mandatory env var and exits with a clear error when it is
+// empty — unless ENV=dev (local `make dev-*` runs without .env, issue #53).
+func requireEnv(k string) string {
+	v := os.Getenv(k)
+	if v == "" && os.Getenv("ENV") != "dev" {
+		log.Fatal().Str("env", k).Msg("required environment variable is empty — set it in .env (see .env.example)")
+	}
+	return v
 }

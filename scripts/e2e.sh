@@ -23,7 +23,7 @@ GATEWAY=${GATEWAY:-http://localhost:8080}
 VOD=${VOD:-$GATEWAY}
 
 EMAIL=${EMAIL:-user@example.com}
-PASSWORD=${PASSWORD:-string}
+PASSWORD=${PASSWORD:-e2e-password}
 SAMPLE=${SAMPLE:-}
 VIDEO_ID=${VIDEO_ID:-}
 POLL_TIMEOUT=${POLL_TIMEOUT:-600}

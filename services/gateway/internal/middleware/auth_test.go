@@ -4,14 +4,58 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
 func mustToken(secret, sub string) string {
-	t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": sub, "type": "access"})
+	t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":  sub,
+		"type": "access",
+		"exp":  time.Now().Add(time.Hour).Unix(),
+	})
 	s, _ := t.SignedString([]byte(secret))
 	return s
+}
+
+// issue #53: token without exp must be rejected by AuthMiddleware.
+func TestAuthRejectsTokenWithoutExp(t *testing.T) {
+	secret := "test-secret"
+	tok := func() string {
+		tt := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "u1", "type": "access"})
+		s, _ := tt.SignedString([]byte(secret))
+		return s
+	}()
+	h := AuthMiddleware(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Fatal("should not call") }))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 401 {
+		t.Fatalf("want 401 for token without exp got %d", w.Code)
+	}
+}
+
+// issue #53: token without type claim must be rejected (type=access required).
+func TestAuthRejectsTokenWithoutType(t *testing.T) {
+	secret := "test-secret"
+	tok := func() string {
+		tt := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"sub": "u1",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		s, _ := tt.SignedString([]byte(secret))
+		return s
+	}()
+	h := AuthMiddleware(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Fatal("should not call") }))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 401 {
+		t.Fatalf("want 401 for token without type got %d", w.Code)
+	}
 }
 
 func TestAuthMiddlewareOK(t *testing.T) {
