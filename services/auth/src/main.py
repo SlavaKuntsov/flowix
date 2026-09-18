@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from .core.config import JWT_SECRET_PLACEHOLDER, settings
+from .core.config import settings
 from .core.limiter import limiter
 from .routers.auth import router
 
@@ -35,17 +35,18 @@ except ImportError:
 
 
 def validate_secrets() -> None:
-    """Fail fast on an empty or placeholder JWT_SECRET at startup (issue #53).
+    """Fail fast on an empty JWT_SECRET at startup (issue #53).
 
-    Called from the app lifespan (not at import) so unit tests with the default
-    settings keep working. ENV=dev bypasses the check for local runs.
+    Same semantics as requireEnv in the Go services: empty secret → hard fail,
+    ENV=dev bypasses for local runs. Called from the app lifespan (not at
+    import) so unit tests with default settings keep working.
     """
     if os.getenv("ENV", "") == "dev":
         return
-    if settings.jwt_secret in ("", JWT_SECRET_PLACEHOLDER):
+    if not settings.jwt_secret:
         raise RuntimeError(
-            "JWT_SECRET is empty or placeholder — set a real secret in .env "
-            "(see .env.example). Set ENV=dev to bypass for local development."
+            "JWT_SECRET is empty — set it in .env (see .env.example). "
+            "Set ENV=dev to bypass for local development."
         )
 
 

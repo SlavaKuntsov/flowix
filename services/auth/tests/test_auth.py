@@ -212,18 +212,20 @@ def test_refresh_token_without_exp_rejected():
 
 
 def test_validate_secrets_fail_fast(monkeypatch):
-    # issue #53: empty/placeholder JWT_SECRET must fail at startup, ENV=dev bypasses
+    # issue #53: empty JWT_SECRET must fail at startup, ENV=dev bypasses.
+    # Patch settings directly — ambient .env/env must not affect the test.
     import pytest
 
-    from src.core.config import JWT_SECRET_PLACEHOLDER
+    from src.core.config import settings
     from src.main import validate_secrets
 
+    monkeypatch.setattr(settings, "jwt_secret", "")
     monkeypatch.delenv("ENV", raising=False)
     with pytest.raises(RuntimeError):
         validate_secrets()
-    monkeypatch.setenv("JWT_SECRET", JWT_SECRET_PLACEHOLDER)
-    with pytest.raises(RuntimeError):
-        validate_secrets()
+    monkeypatch.setattr(settings, "jwt_secret", "real-secret")
+    validate_secrets()  # non-empty → no exception
+    monkeypatch.setattr(settings, "jwt_secret", "")
     monkeypatch.setenv("ENV", "dev")
     validate_secrets()  # dev bypass — no exception
 
