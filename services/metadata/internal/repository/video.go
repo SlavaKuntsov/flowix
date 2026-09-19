@@ -116,8 +116,13 @@ func (r *VideoRepo) Update(ctx context.Context, id, ownerID string, req model.Up
 		// no-row в WHERE неразличим: чужое видео или не существует — классифицируем
 		// отдельным чтением, чтобы сохранить контракт ответов 403/404
 		var exists bool
-		if e := r.pool.QueryRow(ctx, `SELECT true FROM videos WHERE id=$1`, id).Scan(&exists); e == nil {
+		e := r.pool.QueryRow(ctx, `SELECT true FROM videos WHERE id=$1`, id).Scan(&exists)
+		if e == nil {
 			return nil, ErrForbidden
+		}
+		if !errors.Is(e, pgx.ErrNoRows) {
+			// transient DB error при классификации не маскируем в 404
+			return nil, e
 		}
 		return nil, ErrNotFound
 	}
