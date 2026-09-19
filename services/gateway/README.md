@@ -29,10 +29,11 @@ make lint-go
   Redis недоступен → fail-open (availability over strictness), warn в лог
   не чаще раза в минуту.
 - **XFF-доверие** — `X-Forwarded-For`/`X-Real-IP` учитываются только если
-  непосредственный пир в `TRUSTED_PROXY_CIDRS` (дефолт `172.16.0.0/12` —
-  docker-сеть); подделка XFF клиентом не влияет на ключ лимитера.
-  Проверенный клиентский IP выставляется в `X-Real-IP` для downstream —
-  auth ключует свой slowapi-лимитер по нему.
+  непосредственный пир в `TRUSTED_PROXY_CIDRS` (по умолчанию пусто: gateway —
+  edge, LB перед ним нет, клиентский XFF не доверяется никогда — ревью фазы 17,
+  M1); подделка XFF клиентом не влияет на ключ лимитера. Проверенный
+  клиентский IP выставляется в `X-Real-IP` для downstream — auth ключует свой
+  slowapi-лимитер по нему.
 
 ## HLS-auth: metadata-кэш и общий http client (issue #54)
 

@@ -55,7 +55,9 @@ func main() {
 	// issue #52: CORS — явный allowlist (пусто = никому, без wildcard),
 	// XFF доверяем только от trusted прокси, rate-limit в Redis
 	corsOrigins := parseCommaList(os.Getenv("CORS_ALLOWED_ORIGINS"))
-	trusted, err := gwmw.ParseTrustedCIDRS(envOr("TRUSTED_PROXY_CIDRS", "172.16.0.0/12"))
+	// issue #52: пустой дефолт = не доверять ничьему XFF (gateway — edge, LB нет);
+	// если перед gateway появится LB — задать его CIDR в TRUSTED_PROXY_CIDRS
+	trusted, err := gwmw.ParseTrustedCIDRS(envOr("TRUSTED_PROXY_CIDRS", ""))
 	if err != nil {
 		log.Fatal().Err(err).Str("env", "TRUSTED_PROXY_CIDRS").Msg("invalid trusted proxy CIDR list")
 	}
