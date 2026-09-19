@@ -1,11 +1,14 @@
 package middleware
 
 import (
+	"container/list"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -97,8 +100,39 @@ type videoMeta struct {
 	Status     string `json:"status"`
 }
 
+// hlsMetaClient is shared by all metadata calls (issue #54): one client with
+// connection pooling instead of a new http.Client per segment request.
+var hlsMetaClient = &http.Client{
+	Timeout: 3 * time.Second,
+	Transport: func() http.RoundTripper {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.MaxIdleConns = 100
+		t.MaxIdleConnsPerHost = 32
+		t.IdleConnTimeout = 60 * time.Second
+		return t
+	}(),
+}
+
+// statusError is a non-200 response from the metadata internal endpoint.
+type statusError struct {
+	status int
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("metadata status %d", e.status) }
+
+// TTLs are vars so tests can shorten them; positive TTL ≤15s keeps a
+// visibility change observable within that window (issue #54).
+var (
+	metaCacheTTL    = 10 * time.Second
+	metaNegCacheTTL = 5 * time.Second
+)
+
+// metaCacheMaxEntries bounds the LRU (a few thousand videos is plenty for one
+// gateway instance).
+const metaCacheMaxEntries = 4096
+
 // fetchVideoMeta calls metadata internal endpoint to get visibility/owner.
-func fetchVideoMeta(metadataURL, internalToken, videoID string) (*videoMeta, error) {
+func fetchVideoMeta(client *http.Client, metadataURL, internalToken, videoID string) (*videoMeta, error) {
 	url := strings.TrimSuffix(metadataURL, "/") + "/internal/videos/" + videoID
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -107,14 +141,13 @@ func fetchVideoMeta(metadataURL, internalToken, videoID string) (*videoMeta, err
 	if internalToken != "" {
 		req.Header.Set("X-Internal-Token", internalToken)
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("metadata status %d", resp.StatusCode)
+		return nil, &statusError{status: resp.StatusCode}
 	}
 	var v videoMeta
 	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
@@ -126,8 +159,99 @@ func fetchVideoMeta(metadataURL, internalToken, videoID string) (*videoMeta, err
 	return &v, nil
 }
 
+// metaCache is a concurrency-safe bounded LRU with per-entry TTL.
+// A positive entry caches the metadata result; a negative entry (meta == nil)
+// caches a metadata 404/403 for the shorter negTTL (issue #54).
+type metaCache struct {
+	mu      sync.Mutex
+	max     int
+	ttl     time.Duration
+	negTTL  time.Duration
+	entries map[string]*list.Element
+	lru     *list.List // front = most recently used
+}
+
+type metaCacheEntry struct {
+	key       string
+	meta      *videoMeta // nil = negative entry
+	errStatus int        // metadata status for negative entries
+	expires   time.Time
+}
+
+func newMetaCache(max int, ttl, negTTL time.Duration) *metaCache {
+	return &metaCache{
+		max:     max,
+		ttl:     ttl,
+		negTTL:  negTTL,
+		entries: make(map[string]*list.Element, max),
+		lru:     list.New(),
+	}
+}
+
+func (c *metaCache) get(videoID string) (metaCacheEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, ok := c.entries[videoID]
+	if !ok {
+		return metaCacheEntry{}, false
+	}
+	e := el.Value.(*metaCacheEntry)
+	if time.Now().After(e.expires) {
+		c.lru.Remove(el)
+		delete(c.entries, videoID)
+		return metaCacheEntry{}, false
+	}
+	c.lru.MoveToFront(el)
+	// return a copy: put() may refresh the stored entry concurrently
+	return *e, true
+}
+
+func (c *metaCache) put(videoID string, meta *videoMeta, errStatus int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ttl := c.ttl
+	if errStatus != 0 {
+		ttl = c.negTTL
+	}
+	if el, ok := c.entries[videoID]; ok {
+		e := el.Value.(*metaCacheEntry)
+		e.meta, e.errStatus, e.expires = meta, errStatus, time.Now().Add(ttl)
+		c.lru.MoveToFront(el)
+		return
+	}
+	c.entries[videoID] = c.lru.PushFront(&metaCacheEntry{
+		key: videoID, meta: meta, errStatus: errStatus, expires: time.Now().Add(ttl),
+	})
+	if len(c.entries) > c.max {
+		if back := c.lru.Back(); back != nil {
+			delete(c.entries, back.Value.(*metaCacheEntry).key)
+			c.lru.Remove(back)
+		}
+	}
+}
+
 // HLSAuth protects /hls/* : private videos require owner JWT or hls signed token.
+// Metadata lookups go through an LRU cache (TTL 10s, negative 404/403 5s, issue #54):
+// one playback issues 100+ segment requests, they must not each hit metadata.
 func HLSAuth(jwtSecret, internalToken, metadataURL string) func(http.Handler) http.Handler {
+	cache := newMetaCache(metaCacheMaxEntries, metaCacheTTL, metaNegCacheTTL)
+	getMeta := func(videoID string) (*videoMeta, error) {
+		if e, ok := cache.get(videoID); ok {
+			if e.meta != nil {
+				return e.meta, nil
+			}
+			return nil, &statusError{status: e.errStatus}
+		}
+		meta, err := fetchVideoMeta(hlsMetaClient, metadataURL, internalToken, videoID)
+		var se *statusError
+		switch {
+		case err == nil:
+			cache.put(videoID, meta, 0)
+		case errors.As(err, &se) && (se.status == http.StatusNotFound || se.status == http.StatusForbidden):
+			cache.put(videoID, nil, se.status) // negative cache
+		}
+		return meta, err
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			videoID := extractVideoID(r.URL.Path)
@@ -135,12 +259,13 @@ func HLSAuth(jwtSecret, internalToken, metadataURL string) func(http.Handler) ht
 				next.ServeHTTP(w, r)
 				return
 			}
-			meta, err := fetchVideoMeta(metadataURL, internalToken, videoID)
+			meta, err := getMeta(videoID)
 			if err != nil {
 				// If video not found, let vod return 404; if fetch fails, propagate 502
 				// To avoid leaking existence, treat not-found as 404 from vod.
 				// If metadata unavailable, return 502.
-				if strings.Contains(err.Error(), "404") {
+				var se *statusError
+				if errors.As(err, &se) && se.status == http.StatusNotFound {
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -247,7 +372,7 @@ func HLSTokenHandler(jwtSecret, internalToken, metadataURL string) http.HandlerF
 			http.Error(w, `{"error":"missing video id"}`, http.StatusBadRequest)
 			return
 		}
-		meta, err := fetchVideoMeta(metadataURL, internalToken, videoID)
+		meta, err := fetchVideoMeta(hlsMetaClient, metadataURL, internalToken, videoID)
 		if err != nil {
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 			return

@@ -34,6 +34,18 @@ make lint-go
   Проверенный клиентский IP выставляется в `X-Real-IP` для downstream —
   auth ключует свой slowapi-лимитер по нему.
 
+## HLS-auth: metadata-кэш и общий http client (issue #54)
+
+`HLSAuth` больше не ходит в metadata на каждый `.ts`-сегмент:
+
+- **Один `http.Client`** (`hlsMetaClient`, timeout 3s, keep-alive пул) переиспользуется
+  и `HLSAuth`, и `HLSTokenHandler` — без нового клиента на каждый запрос.
+- **LRU-кэш** `video_id → metadata` (4096 записей): позитивные ответы TTL 10s
+  (смена visibility видна в пределах 15s по ТЗ), негативные (metadata 404/403)
+  TTL 5s. Сеть/5xx от metadata не кэшируются. Кэш in-process, на инстанс middleware.
+- Поведение authz не изменилось: private без валидного токена владельца → 403,
+  не найден в metadata → passthrough к vod (404), metadata недоступна → 502.
+
 ## Zed IDE
 См. `services/metadata/README.md` — Go `gopls` автоформат при сохранении.
 
