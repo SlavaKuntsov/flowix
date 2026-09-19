@@ -1,3 +1,4 @@
+// Package storage wraps MinIO access for metadata (delete, presign init).
 package storage
 
 import (

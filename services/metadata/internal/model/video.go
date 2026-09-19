@@ -1,3 +1,4 @@
+// Package model defines video metadata domain types and visibility enum.
 package model
 
 import "time"

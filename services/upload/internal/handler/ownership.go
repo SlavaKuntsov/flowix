@@ -1,3 +1,5 @@
+// Package handler implements HTTP handlers of the upload service
+// (upload, presign, resumable, ownership checks).
 package handler
 
 import (

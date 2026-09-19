@@ -1,3 +1,4 @@
+// Package queue publishes transcoding events to RabbitMQ from the upload service.
 package queue
 
 import (

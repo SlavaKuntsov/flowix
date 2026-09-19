@@ -75,7 +75,7 @@ func main() {
 		log.Fatalf("pgxpool parse: %v", err)
 	}
 	if v := os.Getenv("DATABASE_POOL_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		if n, parseErr := strconv.Atoi(v); parseErr == nil && n > 0 {
 			poolCfg.MaxConns = int32(n)
 		}
 	} else {
@@ -104,10 +104,10 @@ func main() {
 			// Issue #43: presigned thumbnail URLs for browsers must embed the public host
 			publicEndpoint := os.Getenv("MINIO_PUBLIC_ENDPOINT")
 			if publicEndpoint != "" {
-				if err := store.EnablePublicPresign(publicEndpoint, minioAccess, minioSecret, strings.HasPrefix(publicEndpoint, "https://")); err == nil {
+				if presignErr := store.EnablePublicPresign(publicEndpoint, minioAccess, minioSecret, strings.HasPrefix(publicEndpoint, "https://")); presignErr == nil {
 					logger.Info().Str("public_endpoint", publicEndpoint).Msg("metadata public presign enabled")
 				} else {
-					logger.Warn().Err(err).Msg("public presign init failed, thumbnails will use internal endpoint")
+					logger.Warn().Err(presignErr).Msg("public presign init failed, thumbnails will use internal endpoint")
 				}
 			}
 			vh = handler.NewVideoHandlerWithStorage(repo, store)

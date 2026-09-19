@@ -1,3 +1,4 @@
+// Package client wraps HTTP calls from upload to the metadata service.
 package client
 
 import (

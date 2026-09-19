@@ -1,3 +1,4 @@
+// Package handler implements HTTP handlers of the metadata API (videos CRUD, VOD mapping).
 package handler
 
 import (

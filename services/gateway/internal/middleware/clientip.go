@@ -1,3 +1,5 @@
+// Package middleware provides gateway-specific HTTP middleware:
+// CORS allowlist, Redis rate limiting, trusted-proxy client IP, HLS auth.
 package middleware
 
 import (

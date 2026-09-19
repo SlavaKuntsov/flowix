@@ -1,3 +1,4 @@
+// Package storage implements object storage backends for upload/metadata (MinIO).
 package storage
 
 import (
@@ -59,9 +60,9 @@ func (m *MinioClient) PresignedPutObject(ctx context.Context, key string, expire
 	return u.String(), nil
 }
 
-// PresignedPutObjectWithURL returns presigned URL for external access.
-// Previously we rewrote host after signing, which broke AWS SigV4 (host is signed).
-// Now we generate the signature with the public host directly if provided.
+// PresignedPutObjectExternal returns a presigned PUT URL for external
+// (browser) access. Previously we rewrote the host after signing, which broke
+// AWS SigV4 (host is signed); now we sign with the public host directly.
 func (m *MinioClient) PresignedPutObjectExternal(ctx context.Context, key string, expires time.Duration, publicEndpoint string) (string, error) {
 	if publicEndpoint == "" {
 		return m.PresignedPutObject(ctx, key, expires)
