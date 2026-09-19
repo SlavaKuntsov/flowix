@@ -22,12 +22,12 @@ Flowix — MVP видеоплатформы с адаптивным стрими
 | **auth** | Python FastAPI | `:8001` | Регистрация, логин, refresh, `GET /me`. Выпускает JWT (`HS256`, access 15м / refresh 7д, Argon2) | `postgres.users` |
 | **metadata** | Go + `chi` | `:8002` | CRUD видео: `GET/POST /api/v1/videos`, `GET/PATCH/DELETE /api/v1/videos/:id`. Внутренний `PATCH /internal/videos/:id/status` для transcoder'а. Валидация, пагинация | `postgres.videos`, `video_renditions` |
 | **upload** | Go + `chi` | `:8003` | Принимает `multipart/form-data` на `POST /api/v1/videos/upload`, льёт оригинал в MinIO `raw/{id}/original.mp4`, создаёт запись `status=uploaded` через metadata, публикует `video.uploaded` в RabbitMQ | MinIO + RabbitMQ + metadata |
-| **transcoder** | Python Celery + FFmpeg | — (воркер) | Слушает `video.uploaded`, качает оригинал, `ffprobe` → 3× FFmpeg параллельно (360p/720p/1080p), льёт `renditions/{id}/{quality}.mp4` в MinIO, `PATCH metadata status=ready`, публикует `video.transcoded`. Тут же делает превью (`-ss 1 -vframes 1`) | MinIO, RabbitMQ, metadata |
+| **transcoder** | Python pika + FFmpeg | — (воркер) | Слушает `video.uploaded`, качает оригинал, `ffprobe` → 3× FFmpeg параллельно (360p/720p/1080p), льёт `renditions/{id}/{quality}.mp4` в MinIO, `PATCH metadata status=ready`, публикует `video.transcoded`. Тут же делает превью (`-ss 1 -vframes 1`) | MinIO, RabbitMQ, metadata |
 | **streaming (nginx-vod)** | nginx + `kaltura/nginx-vod-module` | internal (без публикации порта, issue #43) | Отдаёт HLS/DASH на лету через gateway `/hls/*` (HLSAuth): `GET /hls/{id}/master.m3u8` склеивает 3 MP4 в мастер-манифест, сегменты режет по ключевым кадрам. JIT — храним только MP4, сегменты не прегенерим. `vod_mode mapped`; MP4 читает из MinIO по presigned GET из mapping (`metadata /internal/videos/:id/vod`) | Читает MinIO (presigned) |
 | **frontend** | Next.js 14 + `hls.js` + `zustand` + `tailwind` | `:3000` | Лента `/`, просмотр `/watch/[id]` (`new Hls().loadSource(master.m3u8)` + `playbackRate 0.5–2x`), загрузка `/upload` (multipart + прогресс) | Gateway + HLS |
 | **infra: Postgres** | `postgres:16-alpine` | `:5432` | `users`, `videos (status: uploaded/processing/ready/failed)`, `video_renditions` — см. `deploy/postgres/init.sql:1` | — |
 | **infra: MinIO** | `minio/minio` | `:9000/:9001` | S3-совместимое хранилище: `raw/` оригиналы, `renditions/` готовые MP4, превью | — |
-| **infra: RabbitMQ** | `rabbitmq:3-management` | `:5672/:15672` | Очередь `video.uploaded` / `video.transcoded`, Celery брокер. UI на `:15672` | — |
+| **infra: RabbitMQ** | `rabbitmq:3-management` | `:5672/:15672` | Очередь `video.uploaded` / `video.transcoded` (брокер pipeline-событий). UI на `:15672` | — |
 
 Каждый сервис — свой `Dockerfile` + `go.mod` / `pyproject.toml` (uv), собирается независимо. Локально — `make up` / `docker compose --env-file .env -f deploy/docker-compose.yml up --build -d`.
 
@@ -57,7 +57,7 @@ Flowix — MVP видеоплатформы с адаптивным стрими
                                │
                                ▼
                         ┌──────────┐ RabbitMQ video.uploaded
-                        │transcoder│ Celery worker
+                        │transcoder│ pika worker
                         └──────────┘   │
                                ├─ download raw/{id}/original.mp4
                                ├─ ffprobe (fps/duration проверка)
@@ -139,7 +139,7 @@ ffmpeg -i in.mp4 -vn -c:a aac -b:a 128k -ar 48000 -ac 2 audio.m4a
 ```
 services/gateway|metadata|upload  — Go chi (1.27-alpine), см. их README.md
 services/auth                     — FastAPI + uv, src/routers/auth.py
-services/transcoder               — Celery app/{celery_app.py,tasks.py}
+services/transcoder               — pika-воркер app/consumer.py
 frontend/                         — Next 14 App Router
 deploy/docker-compose.yml         — infra + все сервисы (healthcheck service_healthy)
 deploy/docker-compose.prod.yml    — prod overrides (CDN headers, limits)

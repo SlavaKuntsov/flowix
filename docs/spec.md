@@ -41,7 +41,7 @@ The backend is split into microservices written in **Go** and **Python** to leve
 │   ├── metadata/              # Go (Metadata Service)
 │   ├── upload/                # Go (Upload Service)
 │   ├── auth/                  # Python (FastAPI or Django)
-│   ├── transcoder/            # Python (Celery worker)
+│   ├── transcoder/            # Python (pika worker)
 │   └── ... (others as needed)
 ├── frontend/                  # Next app
 ├── deploy/                    # Dockerfiles, docker-compose.yml, nginx configs
@@ -81,7 +81,7 @@ Each service has its own `Dockerfile` and can be developed independently. Go-с�
 
 ### 5. Transcoding Worker (Python)
 - **Purpose**: Consume `video.uploaded` events, download original from MinIO, run FFmpeg to produce multiple renditions, upload results, publish `video.transcoded` event.
-- **Framework**: Celery with Redis/RabbitMQ broker.
+- **Framework**: pika consumer with RabbitMQ broker (`video.uploaded`, DLX/retry).
 - **Key FFmpeg requirements**:
   - Output formats: H.264/AAC in MP4 container.
   - Multiple renditions (e.g., 360p, 720p, 1080p) with appropriate bitrates.
@@ -164,7 +164,7 @@ Refer to `.env.example` for all variables. Key ones:
 
 ### Python Services
 - Use FastAPI for new services; type hints are mandatory.
-- For Celery workers, define tasks in `tasks.py` and use Pydantic models for payloads.
+- Worker (transcoder) — pika consumer in `app/consumer.py`; event payloads as JSON dicts.
 - Use `aiobotocore` for async MinIO operations if needed.
 - Logging: standard `logging` with JSON formatter in production.
 
@@ -221,7 +221,7 @@ go run ./cmd/server
 ### Run transcoding worker locally (with hot reload)
 ```bash
 cd services/transcoder
-celery -A app.celery worker --loglevel=info
+python -m app.consumer
 ```
 
 ### Run frontend dev server

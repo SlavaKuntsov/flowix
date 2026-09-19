@@ -274,7 +274,6 @@ services:
       FFMPEG_PRESET: ${FFMPEG_PRESET:-veryfast}
       ENCODE_MODE: ${ENCODE_MODE:-cbr}
       FFMPEG_HWACCEL: ${FFMPEG_HWACCEL:-auto}
-      TRANSCODER_PIPE_INPUT: ${TRANSCODER_PIPE_INPUT:-true}
       KEEP_RAW: ${KEEP_RAW:-false}
       METRICS_PORT: ${TRANSCODER_METRICS_PORT:-8004}
     # issue #55: метрики скрейпит Prometheus по внутренней сети — порт не публикуется

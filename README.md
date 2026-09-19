@@ -19,7 +19,7 @@
 - **JIT packaging** — only 3 MP4s stored, HLS/DASH segmented on-the-fly by `nginx-vod` (`vod_mode mapped`, `vod_segment_duration 2000`)
 - **Async pipeline** — `upload → RabbitMQ (video.uploaded) → pika + FFmpeg (sequential, -threads 2 -preset veryfast, heartbeat 600) → MinIO → metadata (ready) → HLS`
 - **Secure & scalable** — `INTERNAL_TOKEN` for `/internal/*`, `MaxBytesReader 5GB` (`UPLOAD_MAX_BYTES`), `private` raw bucket (`renditions/thumbnails` download), owner attribution (`owner_email`)
-- **Microservices** — Go (`chi`) for gateway/metadata/upload, Python (`FastAPI` + `pika`/`Celery` legacy) for auth/transcoder
+- **Microservices** — Go (`chi`) for gateway/metadata/upload, Python (`FastAPI` + `pika`) for auth/transcoder
 - **Modern frontend** — Next.js 14 App Router + `hls.js` + `zustand` + `tailwind`, `playbackRate 0.5–2×`, owner badges, delete (`DELETE /api/v1/videos/:id` owner only + S3 cleanup)
 - **Production-ready infra** — Postgres 16 + `golang-migrate` (`deploy/migrations`), MinIO, RabbitMQ, Docker Compose, healthchecks, JWT (HS256, Argon2)
 
@@ -42,7 +42,7 @@
 | Layer | Tech |
 |-------|------|
 | Gateway / Metadata / Upload | Go 1.27, `go-chi/chi/v5`, `pgx`, `zerolog`, `amqp091-go`, `minio-go` (metadata delete) |
-| Auth / Transcoder | Python 3.14, FastAPI, `pika` (primary) / `Celery` legacy, `uv`, `argon2`, `minio`, `ffmpeg` (`-threads 2 -preset veryfast`, `heartbeat 600`) |
+| Auth / Transcoder | Python 3.14, FastAPI, `pika`, `uv`, `argon2`, `minio`, `ffmpeg` (`-threads 2 -preset veryfast`, `heartbeat 600`) |
 | Infra | Postgres 16 + `golang-migrate` (`deploy/migrations`), MinIO (private raw, download renditions), RabbitMQ 3, `nginx-vod-module` (`envsubst` INTERNAL_TOKEN), FFmpeg |
 | Frontend | Next.js 14, `hls.js` 1.5 (`maxBufferLength 4`), `zustand` 4, Tailwind |
 | Tooling | Docker Compose, `golangci-lint`, `black`/`ruff`/`mypy`, `eslint`/`prettier` |
@@ -93,7 +93,7 @@ uv sync --project services/transcoder
 
 make migrate-up      # golang-migrate up (if postgres is running without compose)
 make dev-auth        # uvicorn src.main:app --reload --port 8001
-make dev-transcoder  # python -m app.consumer (pika, heartbeat 600) — legacy: make dev-transcoder-celery
+make dev-transcoder  # python -m app.consumer (pika, heartbeat 600)
 make dev-metadata    # :8002 (needs MINIO_ENDPOINT, INTERNAL_TOKEN)
 make dev-upload      # :8003
 make dev-gateway     # :8080
