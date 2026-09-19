@@ -1,5 +1,4 @@
 import json
-import subprocess
 import time
 from unittest.mock import MagicMock, patch
 
@@ -242,14 +241,12 @@ def test_declare_topology():
     mock_ch.exchange_declare.assert_called_once_with(
         exchange=cons.DLX_EXCHANGE, exchange_type="direct", durable=True
     )
-    # dlq, retry, main + 3 fan-out queues (Phase 12)
-    assert mock_ch.queue_declare.call_count == 6
+    # issue #62: dlq, retry, main — fan-out очереди удалены (никто не потреблял)
+    assert mock_ch.queue_declare.call_count == 3
     calls = [c[1].get("queue") for c in mock_ch.queue_declare.call_args_list]
     assert cons.DLQ in calls
     assert cons.RETRY_QUEUE in calls
     assert cons.QUEUE in calls
-    for fq in cons.FANOUT_QUEUES:
-        assert fq in calls
     # retry queue has TTL
     retry_call = [
         c for c in mock_ch.queue_declare.call_args_list if c[1].get("queue") == cons.RETRY_QUEUE
@@ -473,105 +470,45 @@ def test_handle_message_moves_to_dlq_after_max_retries():
         ch.basic_publish.assert_not_called()
 
 
-class _FakeProc:
-    """Minimal Popen stand-in with tracked kill/wait/communicate (issue #51).
-
-    Behaves like a real process: poll() returns None while alive, kill() makes
-    it exit (SIGKILL), wait()/communicate() reap it.
-    """
-
-    def __init__(self, returncode: int = 0, communicate_raises: Exception | None = None):
-        self.stdin = MagicMock()
-        self.pid = 4242
-        self.returncode: int | None = None
-        self._exit_code = returncode
-        self._communicate_raises = communicate_raises
-        self.kill_calls = 0
-        self.wait_calls = 0
-        self.communicate_calls = 0
-
-    def poll(self) -> int | None:
-        return self.returncode
-
-    def kill(self) -> None:
-        self.kill_calls += 1
-        self.returncode = -9
-
-    def wait(self, timeout: float | None = None) -> int:
-        self.wait_calls += 1
-        assert self.returncode is not None, "wait() on a live process would block"
-        return self.returncode
-
-    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
-        self.communicate_calls += 1
-        if self._communicate_raises is not None and self.returncode is None:
-            raise self._communicate_raises
-        if self.returncode is None:
-            self.returncode = self._exit_code
-        return b"out", b"err"
+# Issue #62: единый build_ffmpeg_argv — одна сборка argv для всех рендишн.
+def test_build_ffmpeg_argv_cbr_vs_crf(monkeypatch):
+    monkeypatch.setattr(cons, "_nvenc_checked", True)
+    monkeypatch.setattr(cons, "_nvenc_available", False)  # libx264 path
+    monkeypatch.setattr(cons, "ENCODE_MODE", "cbr")
+    cbr = cons.build_ffmpeg_argv("/tmp/in.mp4", None, "/tmp/out.mp4", 720, 2500)
+    assert "-b:v" in cbr and cbr[cbr.index("-b:v") + 1] == "2500k"
+    assert "-crf" not in cbr
+    monkeypatch.setattr(cons, "ENCODE_MODE", "crf")
+    crf_cmd = cons.build_ffmpeg_argv("/tmp/in.mp4", None, "/tmp/out.mp4", 720, 2500, crf=23)
+    assert "-crf" in crf_cmd and crf_cmd[crf_cmd.index("-crf") + 1] == "23"
+    assert "-b:v" not in crf_cmd
 
 
-class _BrokenStream:
-    """MinIO-like stream that dies mid-feed with an error."""
-
-    def __init__(self):
-        self.closed = False
-
-    def stream(self, chunk_size: int):
-        yield b"chunk"
-        raise OSError("stream broken")
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def test_transcode_one_pipe_success_does_not_kill_ffmpeg():
-    proc = _FakeProc(returncode=0)
-    stream = MagicMock()
-    with patch("app.consumer.subprocess.Popen", return_value=proc):
-        cons.transcode_one_pipe(stream, None, "/tmp/out.mp4", 1280, 720, 800)
-    assert proc.kill_calls == 0
-    assert proc.wait_calls == 0
-    proc.stdin.close.assert_called_once()
-    stream.close.assert_called_once()
+def test_build_ffmpeg_argv_identical_gop_for_all_renditions(monkeypatch):
+    # aligned segments: GOP/сегментные аргументы не зависят от качества рендишны
+    monkeypatch.setattr(cons, "_nvenc_checked", True)
+    monkeypatch.setattr(cons, "_nvenc_available", False)
+    cmds = [
+        cons.build_ffmpeg_argv("/tmp/in.mp4", None, f"/tmp/{h}.mp4", h, br)
+        for _, _, h, br, _ in cons.RENDITIONS_SPEC
+    ]
+    for cmd in cmds:
+        assert cmd[cmd.index("-g") + 1] == "60"
+        assert cmd[cmd.index("-keyint_min") + 1] == "60"
+        assert "-force_key_frames" in cmd and "expr:gte(t,n_forced*2)" in cmd
+        assert "-sc_threshold" in cmd and cmd[cmd.index("-sc_threshold") + 1] == "0"
 
 
-def test_transcode_one_pipe_stream_error_kills_and_reaps_ffmpeg():
-    # issue #51 verify: stream failure mid-feed -> ffmpeg killed AND waited/reaped, no zombie
-    proc = _FakeProc()
-    stream = _BrokenStream()
-    with patch("app.consumer.subprocess.Popen", return_value=proc):
-        with pytest.raises(OSError, match="stream broken"):
-            cons.transcode_one_pipe(stream, None, "/tmp/out.mp4", 1280, 720, 800)
-    assert proc.kill_calls == 1
-    assert proc.wait_calls == 1
-    assert proc.returncode == -9  # reaped
-    assert stream.closed
-
-
-def test_transcode_one_pipe_timeout_kills_and_reaps_ffmpeg():
-    # issue #51: communicate(timeout=900) fires -> kill, collect output via
-    # communicate() again (reaps), and propagate TimeoutExpired
-    proc = _FakeProc(communicate_raises=subprocess.TimeoutExpired("ffmpeg", 900))
-    stream = MagicMock()
-    with patch("app.consumer.subprocess.Popen", return_value=proc):
-        with pytest.raises(subprocess.TimeoutExpired):
-            cons.transcode_one_pipe(stream, None, "/tmp/out.mp4", 1280, 720, 800)
-    assert proc.kill_calls == 1
-    assert proc.communicate_calls == 2  # retry after kill to drain output and reap
-    assert proc.returncode == -9
-
-
-def test_transcode_one_pipe_nonzero_exit_raises_and_skips_kill():
-    # ffmpeg already exited on its own -> only CalledProcessError, no kill needed
-    proc = _FakeProc(returncode=1)
-    stream = MagicMock()
-    with patch("app.consumer.subprocess.Popen", return_value=proc):
-        with pytest.raises(subprocess.CalledProcessError):
-            cons.transcode_one_pipe(stream, None, "/tmp/out.mp4", 1280, 720, 800)
-    assert proc.kill_calls == 0
-    assert proc.wait_calls == 0
-    stream.close.assert_called_once()
+def test_build_ffmpeg_argv_audio_copy_or_video_only(monkeypatch):
+    monkeypatch.setattr(cons, "_nvenc_checked", True)
+    monkeypatch.setattr(cons, "_nvenc_available", False)
+    with_audio = cons.build_ffmpeg_argv(
+        "/tmp/in.mp4", "/tmp/audio.m4a", "/tmp/out.mp4", 720, 2500
+    )
+    assert with_audio[with_audio.index("-c:a") + 1] == "copy"
+    assert "-map" in with_audio and "1:a:0" in with_audio
+    without_audio = cons.build_ffmpeg_argv("/tmp/in.mp4", None, "/tmp/out.mp4", 720, 2500)
+    assert "-an" in without_audio and "-c:a" not in without_audio
 
 
 def test_heartbeat_keeper_pokes_connection_periodically():

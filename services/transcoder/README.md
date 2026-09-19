@@ -7,9 +7,9 @@
 ```bash
 # Локально (нужен RabbitMQ + MinIO + FFmpeg)
 uv sync --project services/transcoder
-python -m app.consumer  # pika BlockingConnection, не celery (celery — legacy, будет удален)
+python -m app.consumer  # pika BlockingConnection (issue #62: celery-стабы удалены)
 # или
-make dev-transcoder  # python -m app.consumer (celery legacy: make dev-transcoder-celery)
+make dev-transcoder  # python -m app.consumer
 
 # Через OrbStack
 docker compose -f deploy/docker-compose.yml up -d transcoder rabbitmq minio
@@ -46,10 +46,10 @@ FFMPEG_THREADS=2 FFMPEG_PRESET=veryfast python -m app.consumer
 
 ## Лимиты
 - Последовательный рендеринг (было 3× parallel → OOM), `timeout 900`, `fps` из probe (≤30 preserve, >30 cap 30), `-threads 2 -preset veryfast -maxrate 1.10×`
-- Pipe-режим: при ошибке стрима/таймауте ffmpeg SIGKILL-ится и реапится (`_kill_and_reap`, issue #51) — без зомби
+- `subprocess.run(timeout=900)` на таймауте сам убивает и дожидается ffmpeg — зомби не остаётся (issue #51; pipe-режим с ручным Popen удалён в #62)
 - Heartbeat: `_HeartbeatKeeper` (daemon-поток, `process_data_events` каждые 30с) держит pika-соединение живым во время длинных транскодов (issue #51)
 - `shutil.disk_usage` чек, `SIGTERM` graceful, `deploy/docker-compose.yml:179` + `prod.yml:44` limits `cpus 2 / mem 4G`
-- `.env.example:30` `FFMPEG_THREADS`/`FFMPEG_PRESET`, `make dev-transcoder` теперь `python -m app.consumer` (celery legacy `make dev-transcoder-celery`)
+- `.env.example:30` `FFMPEG_THREADS`/`FFMPEG_PRESET`, `make dev-transcoder` = `python -m app.consumer`
 
 ## Zed IDE
 Аналогично `services/auth/README.md` — `.zed/settings.json:1` → Python `format_on_save` + `ruff` импорты.

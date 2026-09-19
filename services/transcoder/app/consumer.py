@@ -53,7 +53,6 @@ FFMPEG_THREADS = os.getenv("FFMPEG_THREADS", "2")
 FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "veryfast")
 ENCODE_MODE = os.getenv("ENCODE_MODE", "cbr")  # cbr (default, compat) or crf
 FFMPEG_HWACCEL = os.getenv("FFMPEG_HWACCEL", "auto")  # auto | nvenc | none
-TRANSCODE_PIPE = os.getenv("TRANSCODER_PIPE_INPUT", "true").lower() == "true"
 # Phase 12 HW/thumbnail tuning
 THUMBNAIL_FROM_RENDITION = True
 
@@ -63,9 +62,6 @@ RENDITIONS_SPEC = [
     ("720p", 1280, 720, 2500, 23),
     ("1080p", 1920, 1080, 5000, 23),
 ]
-# fan-out per-rendition queues — Phase 12: 3 workers × prefetch 1
-FANOUT_QUEUES = ["video.transcode.360p", "video.transcode.720p", "video.transcode.1080p"]
-FANOUT_RQ_MAP = {"360p": FANOUT_QUEUES[0], "720p": FANOUT_QUEUES[1], "1080p": FANOUT_QUEUES[2]}
 # One shared audio bitrate — see encode_audio() for why it must not vary per rendition.
 AUDIO_BITRATE = "128k"
 
@@ -293,202 +289,31 @@ def encode_audio(input_path: str, output_path: str):
     subprocess.run(cmd, check=True, capture_output=True, timeout=300)
 
 
-def transcode_one(
+def build_ffmpeg_argv(
     input_path: str,
     audio_path: str | None,
     output_path: str,
-    width: int,
     height: int,
     bitrate_k: int,
     fps: int = 30,
     crf: int = 23,
-):
-    """Single rendition with aligned GOP for JIT HLS (phase 4 spec, Phase 10 limits + Phase 12 CRF/HW)."""
+) -> list[str]:
+    """Единая сборка ffmpeg argv для одной рендишны (issue #62).
+
+    Раньше file- и pipe-пути дублировали сборку (~60%) и разъехались: pipe
+    игнорировал ENCODE_MODE=crf при nvenc. Все рендишны обязаны получить
+    идентичный GOP/таймлайн сегментов (fps*2, keyint_min, sc_threshold=0,
+    force_key_frames каждые 2s) — менять аргументы можно только для всех сразу.
+    """
     vf = f"scale=-2:{height}:flags=lanczos"
     codec_args, enc = _get_video_codec_and_extra(fps)
-    # input handling — pipe:0 is used for streaming without /tmp (Phase 12)
-    if input_path == "pipe:0":
-        cmd = ["ffmpeg", "-y", "-i", "pipe:0"]
-    else:
-        # for file input keep threads via codec_args (threads already in codec_args for libx264)
-        cmd = ["ffmpeg", "-y", "-i", input_path]
-        # prepend threads for file path is inside codec_args; for pipe we ignore threads (nvenc doesn't use)
-    if enc == "libx264" and input_path != "pipe:0":
-        # codec_args already contains threads/preset for libx264 file path
-        pass
+    cmd = ["ffmpeg", "-y", "-i", input_path]
     if audio_path:
         cmd += ["-i", audio_path, "-map", "0:v:0", "-map", "1:a:0"]
     else:
-        # when using pipe:0 video is stream 0, no audio mapping needed
-        if input_path == "pipe:0":
-            cmd += ["-an"]
-        else:
-            cmd += ["-an"]
-    # video codec args
-    if enc == "libx264":
-        # codec_args for libx264 already includes -threads etc., but for pipe:0 we need to inject them before -i which we already handled
-        # Re-build to ensure correct order: ffmpeg -y [-threads X] -i pipe:0 ...
-        if input_path == "pipe:0":
-            # inject threads before input if libx264
-            threads = (
-                FFMPEG_THREADS
-                if FFMPEG_THREADS.isdigit() and 1 <= int(FFMPEG_THREADS) <= 8
-                else "2"
-            )
-            # rebuild cmd with threads before pipe input
-            base = ["ffmpeg", "-y", "-threads", threads, "-i", "pipe:0"]
-            if audio_path:
-                base += ["-i", audio_path, "-map", "0:v:0", "-map", "1:a:0"]
-            else:
-                base += ["-an"]
-            cmd = base
-        else:
-            cmd += ["-c:v"] + codec_args[:1]  # libx264
-            # append remaining codec_args after c:v (preset/threads)
-            # codec_args is ["libx264","-preset",preset,"-threads",threads] -> split
-            for a in codec_args[1:]:
-                cmd.append(a)
-        cmd += [
-            "-profile:v",
-            "high",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            str(fps),
-            "-g",
-            str(fps * 2),
-            "-keyint_min",
-            str(fps * 2),
-            "-sc_threshold",
-            "0",
-            "-force_key_frames",
-            "expr:gte(t,n_forced*2)",
-            "-vf",
-            vf,
-        ]
-        if ENCODE_MODE == "crf":
-            cmd += [
-                "-crf",
-                str(crf),
-                "-maxrate",
-                f"{int(bitrate_k * 1.10)}k",
-                "-bufsize",
-                f"{bitrate_k * 2}k",
-            ]
-        else:
-            cmd += [
-                "-b:v",
-                f"{bitrate_k}k",
-                "-maxrate",
-                f"{int(bitrate_k * 1.10)}k",
-                "-bufsize",
-                f"{bitrate_k * 2}k",
-            ]
-    else:
-        # nvenc path
-        cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", str(crf)]
-        cmd += [
-            "-profile:v",
-            "high",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            str(fps),
-            "-g",
-            str(fps * 2),
-            "-keyint_min",
-            str(fps * 2),
-            "-sc_threshold",
-            "0",
-            "-force_key_frames",
-            "expr:gte(t,n_forced*2)",
-            "-vf",
-            vf,
-            "-b:v",
-            f"{bitrate_k}k",
-            "-maxrate",
-            f"{int(bitrate_k * 1.10)}k",
-            "-bufsize",
-            f"{bitrate_k * 2}k",
-        ]
-    if audio_path:
-        cmd += ["-c:a", "copy"]
-    cmd += ["-movflags", "+faststart", output_path]
-    log.info(
-        "ffmpeg %dx%d %dk crf=%d %dfps enc=%s mode=%s: %s",
-        width,
-        height,
-        bitrate_k,
-        crf,
-        fps,
-        enc,
-        ENCODE_MODE,
-        " ".join(cmd),
-    )
-    start = time.time()
-    subprocess.run(cmd, check=True, capture_output=True, timeout=900)
-    if METRICS_AVAILABLE and ffmpeg_duration_metric is not None:
-        try:
-            ffmpeg_duration_metric.labels(quality=f"{height}p").observe(time.time() - start)
-        except Exception:
-            pass
-
-
-def _kill_and_reap(proc: subprocess.Popen) -> None:
-    """SIGKILL an ffmpeg subprocess and reap it so it cannot linger as a zombie (issue #51).
-
-    Safe to call on an already-exited process (skips kill, still waits to reap).
-    """
-    try:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=10)
-    except Exception as e:
-        log.error("failed to kill/reap ffmpeg pid=%s: %s", proc.pid, e)
-
-
-def transcode_one_pipe(
-    get_object_stream,
-    audio_path: str | None,
-    output_path: str,
-    width: int,
-    height: int,
-    bitrate_k: int,
-    fps: int = 30,
-    crf: int = 23,
-):
-    """Phase 12: stream MinIO object via pipe:0 to avoid /tmp disk usage.
-
-    get_object_stream should be a file-like object with read() or an iterable of bytes.
-    We feed it to ffmpeg stdin via Popen.
-    """
-    vf = f"scale=-2:{height}:flags=lanczos"
-    codec_args, enc = _get_video_codec_and_extra(fps)
-    # Build cmd similar to transcode_one with pipe:0
-    if enc == "libx264":
-        threads = (
-            FFMPEG_THREADS if FFMPEG_THREADS.isdigit() and 1 <= int(FFMPEG_THREADS) <= 8 else "2"
-        )
-        cmd = ["ffmpeg", "-y", "-threads", threads, "-i", "pipe:0"]
-        if audio_path:
-            cmd += ["-i", audio_path, "-map", "0:v:0", "-map", "1:a:0"]
-        else:
-            cmd += ["-an"]
-        cmd += ["-c:v", "libx264"]
-        preset = (
-            FFMPEG_PRESET
-            if FFMPEG_PRESET
-            in ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow")
-            else "veryfast"
-        )
-        cmd += ["-preset", preset]
-    else:
-        cmd = ["ffmpeg", "-y", "-i", "pipe:0"]
-        if audio_path:
-            cmd += ["-i", audio_path, "-map", "0:v:0", "-map", "1:a:0"]
-        else:
-            cmd += ["-an"]
-        cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", str(crf)]
+        cmd += ["-an"]
+    # libx264: [codec, -preset, -threads]; nvenc: [codec, -preset, -rc, -cq]
+    cmd += ["-c:v"] + codec_args
     cmd += [
         "-profile:v",
         "high",
@@ -528,72 +353,42 @@ def transcode_one_pipe(
     if audio_path:
         cmd += ["-c:a", "copy"]
     cmd += ["-movflags", "+faststart", output_path]
-    log.info("ffmpeg pipe %dx%d %dk enc=%s: %s", width, height, bitrate_k, enc, " ".join(cmd))
-    start = time.time()
-    proc = subprocess.Popen(
-        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    return cmd
+
+
+def transcode_one(
+    input_path: str,
+    audio_path: str | None,
+    output_path: str,
+    width: int,
+    height: int,
+    bitrate_k: int,
+    fps: int = 30,
+    crf: int = 23,
+):
+    """Single rendition with aligned GOP for JIT HLS (phase 4 spec, Phase 10 limits + Phase 12 CRF/HW).
+
+    subprocess.run на таймауте сам убивает и дожидается процесс — зомби не
+    остаётся (issue #51); pipe-вариант с ручным Popen удалён (issue #62):
+    он дублировал сборку argv и всё равно скачивал файл для probe/audio.
+    """
+    cmd = build_ffmpeg_argv(
+        input_path, audio_path, output_path, height, bitrate_k, fps=fps, crf=crf
     )
-    stdout: bytes | None = None
-    stderr: bytes | None = None
-    try:
+    log.info(
+        "ffmpeg %dx%d %dk fps=%d enc-mode=%s: %s",
+        width,
+        height,
+        bitrate_k,
+        fps,
+        ENCODE_MODE,
+        " ".join(cmd),
+    )
+    start = time.time()
+    subprocess.run(cmd, check=True, capture_output=True, timeout=900)
+    if METRICS_AVAILABLE and ffmpeg_duration_metric is not None:
         try:
-            # stream MinIO object to ffmpeg stdin in chunks
-            chunk_size = 256 * 1024
-            # get_object_stream may be response object with stream() or read()
-            if hasattr(get_object_stream, "stream"):
-                # minio get_object returns HTTPResponse with stream()
-                assert proc.stdin is not None
-                for chunk in get_object_stream.stream(chunk_size):
-                    if chunk:
-                        proc.stdin.write(chunk)
-                proc.stdin.close()
-            elif hasattr(get_object_stream, "read"):
-                assert proc.stdin is not None
-                while True:
-                    chunk = get_object_stream.read(chunk_size)
-                    if not chunk:
-                        break
-                    proc.stdin.write(chunk)
-                proc.stdin.close()
-            else:
-                # iterable
-                assert proc.stdin is not None
-                for chunk in get_object_stream:
-                    proc.stdin.write(chunk)
-                proc.stdin.close()
-            stdout, stderr = proc.communicate(timeout=900)
-        except subprocess.TimeoutExpired:
-            # issue #51: ffmpeg outlived its budget — kill it, collect output, re-raise
-            log.warning("ffmpeg pipe timed out after 900s, killing pid=%s", proc.pid)
-            proc.kill()
-            stdout, stderr = proc.communicate()
-            raise subprocess.TimeoutExpired(cmd, 900, output=stdout, stderr=stderr)
-        except Exception:
-            # issue #51: stream error mid-feed (or communicate failure) — never leave ffmpeg running
-            _kill_and_reap(proc)
-            raise
-        if proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
-        if METRICS_AVAILABLE and ffmpeg_duration_metric is not None:
-            try:
-                ffmpeg_duration_metric.labels(quality=f"{height}p").observe(time.time() - start)
-            except Exception:
-                pass
-    finally:
-        # belt-and-braces (issue #51): reap anything that survived the paths above — no zombies
-        if proc.poll() is None:
-            _kill_and_reap(proc)
-        try:
-            if proc.stdin and not proc.stdin.closed:
-                proc.stdin.close()
-        except Exception:
-            pass
-        # ensure stream released
-        try:
-            if hasattr(get_object_stream, "close"):
-                get_object_stream.close()
-            elif hasattr(get_object_stream, "release_conn"):
-                get_object_stream.release_conn()
+            ffmpeg_duration_metric.labels(quality=f"{height}p").observe(time.time() - start)
         except Exception:
             pass
 
@@ -633,7 +428,7 @@ def transcode_thumbnail_from_rendition(rendition_path: str, output_path: str):
 
 
 def declare_topology(channel):
-    """Declare DLX + DLQ + retry queue + main queue + fan-out rendition queues (idempotent). Phase 10b+12."""
+    """Declare DLX + DLQ + retry queue + main queue (idempotent). Phase 10b+12."""
     channel.exchange_declare(exchange=DLX_EXCHANGE, exchange_type="direct", durable=True)
     channel.queue_declare(queue=DLQ, durable=True)
     try:
@@ -671,23 +466,6 @@ def declare_topology(channel):
             except Exception:
                 pass
         raise
-    # Phase 12 fan-out queues: one per rendition for parallel workers (prefetch 1 each)
-    for fq in FANOUT_QUEUES:
-        try:
-            channel.queue_declare(
-                queue=fq,
-                durable=True,
-                arguments={
-                    "x-dead-letter-exchange": DLX_EXCHANGE,
-                    "x-dead-letter-routing-key": DLQ,
-                },
-            )
-        except Exception as e:
-            msg = str(e)
-            if "PRECONDITION" in msg or "inequivalent" in msg:
-                log.warning("fanout queue %s args mismatch: %s", fq, e)
-                raise
-            log.warning("fanout queue declare %s failed: %s", fq, e)
 
 
 def process_message(body: bytes):
@@ -717,19 +495,12 @@ def process_message(body: bytes):
     mc = get_minio()
     # ensure object exists (stat will raise if missing)
     stat = mc.stat_object(BUCKET, s3_key)
-    # detect large file for ultrafast preset — handle MagicMock in tests
     file_size = 0
     try:
         sz = getattr(stat, "size", 0)
-        # MagicMock (tests) should not trigger pipe path
-        if sz is not None and not str(type(sz)).endswith("MagicMock'>"):
-            if isinstance(sz, int):
-                file_size = sz
-            else:
-                try:
-                    file_size = int(sz)
-                except Exception:
-                    file_size = 0
+        # не-int (отсутствует или mock в тестах) → 0, реальный размер возьмём с файла
+        if isinstance(sz, int) and not isinstance(sz, bool):
+            file_size = sz
     except Exception:
         file_size = 0
 
@@ -745,23 +516,19 @@ def process_message(body: bytes):
                 raise
             log.warning("disk_usage check failed: %s", e)
 
-        # Download raw for probe (need file for ffprobe). For large files we keep file but stream for transcode if enabled.
+        # Raw нужен на диске для ffprobe + общего аудиотрека и переиспользуется
+        # всеми рендишнами (issue #62: pipe-стриминг удалён — он качал файл всё
+        # равно и добавлял по сетевому чтению на каждую рендишну).
         raw_path = os.path.join(tmp, "original.mp4")
-        use_pipe = TRANSCODE_PIPE and hasattr(mc, "get_object")
-        # Download only if not using pipe for probe fallback; if pipe enabled we still need file for probe + audio
-        log.info("downloading s3://%s/%s -> %s (pipe=%s)", BUCKET, s3_key, raw_path, use_pipe)
-        try:
-            mc.fget_object(BUCKET, s3_key, raw_path)
-        except AttributeError:
-            log.warning("fget_object not available, falling back to copy test stub")
-            raise
+        log.info("downloading s3://%s/%s -> %s", BUCKET, s3_key, raw_path)
+        mc.fget_object(BUCKET, s3_key, raw_path)
 
         probe = probe_video(raw_path)
         fps = _fps_from_probe(probe)
         # Phase 12 large-file preset override
         global _current_file_size
         _current_file_size = file_size
-        # also check raw_path size if stat was 0 (e.g., MagicMock in tests -> use file size)
+        # stat может не содержать размер — берём фактический размер скачанного файла
         try:
             if file_size == 0 and os.path.exists(raw_path):
                 _current_file_size = os.path.getsize(raw_path)
@@ -793,27 +560,11 @@ def process_message(body: bytes):
             log.warning("no usable audio track (%s), renditions will be video-only", e)
 
         # Phase 12: sequential transcode 720p first for faster HLS, adaptive ladder
-        # If pipe streaming enabled, close raw file after audio extraction and stream per rendition
         renditions: list[dict] = []
         renditions_so_far: list[dict] = []
         for q, w, h, br, crf in ordered:
-            log.info("transcoding %s sequentially (fps=%d crf=%d pipe=%s)", q, fps, crf, use_pipe)
-            if use_pipe and file_size > 0:
-                # Phase 12 streaming without /tmp: stream raw from MinIO per rendition via pipe:0
-                # Need fresh stream per rendition (MinIO get_object is not reusable)
-                try:
-                    stream = mc.get_object(BUCKET, s3_key)
-                    tmp_out = outputs[q]
-                    # For pipe we need audio separately — transcode_one_pipe handles stdin streaming
-                    # We reuse transcode_one_pipe with file audio if exists
-                    transcode_one_pipe(stream, audio_path, tmp_out, w, h, br, fps=fps, crf=crf)
-                except Exception as e:
-                    log.warning(
-                        "pipe transcode failed for %s (%s), falling back to file input", q, e
-                    )
-                    transcode_one(raw_path, audio_path, outputs[q], w, h, br, fps=fps, crf=crf)
-            else:
-                transcode_one(raw_path, audio_path, outputs[q], w, h, br, fps=fps, crf=crf)
+            log.info("transcoding %s sequentially (fps=%d crf=%d)", q, fps, crf)
+            transcode_one(raw_path, audio_path, outputs[q], w, h, br, fps=fps, crf=crf)
 
             # upload rendition immediately and do incremental status update (720p first → HLS available sooner)
             rk = f"renditions/{video_id}/{q}.mp4"
