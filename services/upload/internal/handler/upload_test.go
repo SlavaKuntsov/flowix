@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,3 +198,56 @@ type fakeErr string
 
 func (e fakeErr) Error() string { return string(e) }
 func errFake(s string) error    { return fakeErr(s) }
+
+// Issue #59: ошибка с кавычками и деталями инфры не ломает JSON и не утекает
+// в тело ответа — клиент получает только безопасное сообщение.
+func TestUploadStorageErrorJSONSafe(t *testing.T) {
+	meta := &fakeMeta{id: "vid-1"}
+	leak := `minio put failed: "quoted" msg http://minio:9000/videos \backslash`
+	st := &fakeStorage{err: errFake(leak)}
+	pub := &fakePub{}
+	h := NewUploadHandler(st, pub, meta)
+	body, ctype := newMultipart("file", "test.mp4", "c", nil)
+	req := httptest.NewRequest("POST", "/api/v1/videos/upload", body)
+	req.Header.Set("Content-Type", ctype)
+	req.Header.Set("Authorization", "Bearer "+token("owner1"))
+	req = authContext(req, "owner1")
+	w := httptest.NewRecorder()
+	h.Upload(w, req)
+	if w.Code != 500 {
+		t.Fatalf("want 500 got %d %s", w.Code, w.Body.String())
+	}
+	var out map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("response is not valid json: %v (body %s)", err, w.Body.String())
+	}
+	if out["error"] != "storage error" {
+		t.Fatalf("want generic error message, got %q", out["error"])
+	}
+	if strings.Contains(w.Body.String(), "minio") || strings.Contains(w.Body.String(), "quoted") {
+		t.Fatalf("internal details leaked to client: %s", w.Body.String())
+	}
+}
+
+// Issue #59: ошибки metadata тоже не содержат деталей upstream.
+func TestUploadMetadataErrorJSONSafe(t *testing.T) {
+	meta := &fakeMeta{err: errFake(`metadata 502: http://metadata:8002 "oops"`)}
+	h := NewUploadHandler(&fakeStorage{}, &fakePub{}, meta)
+	body, ctype := newMultipart("file", "test.mp4", "c", nil)
+	req := httptest.NewRequest("POST", "/api/v1/videos/upload", body)
+	req.Header.Set("Content-Type", ctype)
+	req.Header.Set("Authorization", "Bearer "+token("owner1"))
+	req = authContext(req, "owner1")
+	w := httptest.NewRecorder()
+	h.Upload(w, req)
+	if w.Code != 502 {
+		t.Fatalf("want 502 got %d %s", w.Code, w.Body.String())
+	}
+	var out map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("response is not valid json: %v (body %s)", err, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "metadata:8002") || strings.Contains(w.Body.String(), "oops") {
+		t.Fatalf("internal details leaked to client: %s", w.Body.String())
+	}
+}

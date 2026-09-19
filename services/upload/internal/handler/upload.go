@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -81,22 +80,22 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			http.Error(w, `{"error":"file too large (max `+strconv.FormatInt(maxBytes, 10)+` bytes)"}`, http.StatusRequestEntityTooLarge)
+			writeError(w, r, http.StatusRequestEntityTooLarge, "file too large (max "+strconv.FormatInt(maxBytes, 10)+" bytes)", nil)
 			return
 		}
-		http.Error(w, `{"error":"parse form: `+err.Error()+`"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "invalid form", err)
 		return
 	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, `{"error":"file required (field 'file')"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "file required (field 'file')", nil)
 		return
 	}
 	defer func() { _ = file.Close() }()
 
 	// Minimal MIME validation — header can be spoofed, deep check via ffprobe is in transcoder
 	if ct := header.Header.Get("Content-Type"); ct != "" && !isAllowedContentType(ct) {
-		http.Error(w, `{"error":"unsupported content type: `+ct+`"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "unsupported content type: "+ct, nil)
 		return
 	}
 
@@ -112,7 +111,7 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	// 1. create metadata record first to get video_id
 	videoID, err := h.metadata.CreateVideo(token, title, description)
 	if err != nil {
-		http.Error(w, `{"error":"metadata: `+err.Error()+`"}`, http.StatusBadGateway)
+		writeError(w, r, http.StatusBadGateway, "metadata unavailable", err)
 		return
 	}
 
@@ -126,10 +125,10 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if err := h.storage.PutObject(r.Context(), s3Key, file, header.Size, contentType); err != nil {
 		// MaxBytesReader returns error on too large body
 		if strings.Contains(err.Error(), "http: request body too large") {
-			http.Error(w, `{"error":"file too large"}`, http.StatusRequestEntityTooLarge)
+			writeError(w, r, http.StatusRequestEntityTooLarge, "file too large", err)
 			return
 		}
-		http.Error(w, `{"error":"storage: `+err.Error()+`"}`, 500)
+		writeError(w, r, http.StatusInternalServerError, "storage error", err)
 		return
 	}
 
@@ -141,13 +140,11 @@ func (h *UploadHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if err := h.publisher.Publish(r.Context(), ev); err != nil {
 		// log but don't fail upload — transcoder will be triggered manually if needed
 		// for MVP return 500 so client knows
-		http.Error(w, `{"error":"queue: `+err.Error()+`"}`, 500)
+		writeError(w, r, http.StatusInternalServerError, "queue error", err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(201)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, r, http.StatusCreated, map[string]interface{}{
 		"id":     videoID,
 		"s3_key": s3Key,
 		"status": "uploaded",

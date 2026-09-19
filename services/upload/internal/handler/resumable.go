@@ -3,7 +3,6 @@ package handler
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -52,11 +51,11 @@ type statusResponse struct {
 func (h *ResumableHandler) Status(w http.ResponseWriter, r *http.Request) {
 	videoID := chi.URLParam(r, "id")
 	if videoID == "" {
-		http.Error(w, `{"error":"video_id required"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "video_id required", nil)
 		return
 	}
 	// IDOR (issue #46): only the owner may read the upload offset.
-	if !requireOwnership(h.owner, videoID, mw.UserIDFromCtx(r.Context()), w) {
+	if !requireOwnership(h.owner, videoID, mw.UserIDFromCtx(r.Context()), w, r) {
 		return
 	}
 	key := fmt.Sprintf("raw/%s/original.mp4", videoID)
@@ -73,8 +72,7 @@ func (h *ResumableHandler) Status(w http.ResponseWriter, r *http.Request) {
 			size = 0
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(statusResponse{Uploaded: size})
+	writeJSON(w, r, http.StatusOK, statusResponse{Uploaded: size})
 }
 
 // Content-Range format: "bytes start-end/total" or "bytes start-end/*" or "bytes */total"
@@ -107,11 +105,11 @@ func parseContentRange(v string) (start, end, total int64, hasTotal bool, err er
 func (h *ResumableHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	videoID := chi.URLParam(r, "id")
 	if videoID == "" {
-		http.Error(w, `{"error":"video_id required"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "video_id required", nil)
 		return
 	}
 	// IDOR (issue #46): only the owner may append/overwrite the raw object.
-	if !requireOwnership(h.owner, videoID, mw.UserIDFromCtx(r.Context()), w) {
+	if !requireOwnership(h.owner, videoID, mw.UserIDFromCtx(r.Context()), w, r) {
 		return
 	}
 	maxBytes := int64(5 << 30) // 5GB
@@ -134,27 +132,26 @@ func (h *ResumableHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			var mbe *http.MaxBytesError
 			if errors.As(err, &mbe) {
-				http.Error(w, `{"error":"file too large (max `+strconv.FormatInt(maxBytes, 10)+` bytes)"}`, http.StatusRequestEntityTooLarge)
+				writeError(w, r, http.StatusRequestEntityTooLarge, "file too large (max "+strconv.FormatInt(maxBytes, 10)+" bytes)", err)
 				return
 			}
-			http.Error(w, `{"error":"read body"}`, 400)
+			writeError(w, r, http.StatusBadRequest, "read body", err)
 			return
 		}
 		if err := h.storage.PutObject(r.Context(), key, bytes.NewReader(data), int64(len(data)), ct); err != nil {
-			http.Error(w, `{"error":"put: `+err.Error()+`"}`, 500)
+			writeError(w, r, http.StatusInternalServerError, "storage error", err)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "uploaded": strconv.Itoa(len(data))})
+		writeJSON(w, r, http.StatusOK, map[string]string{"status": "ok", "uploaded": strconv.Itoa(len(data))})
 		return
 	}
 	start, end, total, hasTotal, err := parseContentRange(cr)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "invalid Content-Range", err)
 		return
 	}
 	if start < 0 || end < start {
-		http.Error(w, `{"error":"invalid range"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "invalid range", nil)
 		return
 	}
 	chunkSize := end - start + 1
@@ -170,7 +167,10 @@ func (h *ResumableHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		if existing == 0 {
 			w.Header().Set("Range", "bytes=0-0")
 		}
-		http.Error(w, fmt.Sprintf(`{"error":"range mismatch: expected start %d got %d","uploaded":%d}`, existing, start, existing), http.StatusRequestedRangeNotSatisfiable)
+		writeJSON(w, r, http.StatusRequestedRangeNotSatisfiable, map[string]interface{}{
+			"error":    fmt.Sprintf("range mismatch: expected start %d got %d", existing, start),
+			"uploaded": existing,
+		})
 		return
 	}
 	ct := r.Header.Get("Content-Type")
@@ -178,21 +178,21 @@ func (h *ResumableHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		ct = "video/mp4"
 	}
 	if existing+chunkSize > maxBytes {
-		http.Error(w, `{"error":"file too large (max `+strconv.FormatInt(maxBytes, 10)+` bytes)"}`, http.StatusRequestEntityTooLarge)
+		writeError(w, r, http.StatusRequestEntityTooLarge, "file too large (max "+strconv.FormatInt(maxBytes, 10)+" bytes)", nil)
 		return
 	}
 	chunk, err := io.ReadAll(io.LimitReader(r.Body, chunkSize+1))
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			http.Error(w, `{"error":"file too large (max `+strconv.FormatInt(maxBytes, 10)+` bytes)"}`, http.StatusRequestEntityTooLarge)
+			writeError(w, r, http.StatusRequestEntityTooLarge, "file too large (max "+strconv.FormatInt(maxBytes, 10)+" bytes)", err)
 			return
 		}
-		http.Error(w, `{"error":"read chunk"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "read chunk", err)
 		return
 	}
 	if int64(len(chunk)) != chunkSize {
-		http.Error(w, fmt.Sprintf(`{"error":"chunk size mismatch: expected %d got %d"}`, chunkSize, len(chunk)), 400)
+		writeError(w, r, http.StatusBadRequest, fmt.Sprintf("chunk size mismatch: expected %d got %d", chunkSize, len(chunk)), nil)
 		return
 	}
 	// Append: if existing==0 just put, else get existing + append
@@ -202,39 +202,34 @@ func (h *ResumableHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	} else {
 		rc, err := h.storage.GetObject(r.Context(), key)
 		if err != nil {
-			http.Error(w, `{"error":"get existing: `+err.Error()+`"}`, 500)
+			writeError(w, r, http.StatusInternalServerError, "get existing failed", err)
 			return
 		}
 		existingData, err := io.ReadAll(rc)
 		_ = rc.Close()
 		if err != nil {
-			http.Error(w, `{"error":"read existing"}`, 500)
+			writeError(w, r, http.StatusInternalServerError, "read existing failed", err)
 			return
 		}
 		toPut = append(existingData, chunk...)
 	}
 	if err := h.storage.PutObject(r.Context(), key, bytes.NewReader(toPut), int64(len(toPut)), ct); err != nil {
-		http.Error(w, `{"error":"put: `+err.Error()+`"}`, 500)
+		writeError(w, r, http.StatusInternalServerError, "storage error", err)
 		return
 	}
 	uploaded := int64(len(toPut))
 	if hasTotal && uploaded == total {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "complete", "uploaded": uploaded, "total": total})
+		writeJSON(w, r, http.StatusOK, map[string]interface{}{"status": "complete", "uploaded": uploaded, "total": total})
 		return
 	}
 	if hasTotal && uploaded < total {
 		w.Header().Set("Range", fmt.Sprintf("bytes=0-%d", uploaded-1))
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(308)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "resume", "uploaded": uploaded, "total": total})
+		writeJSON(w, r, http.StatusPermanentRedirect, map[string]interface{}{"status": "resume", "uploaded": uploaded, "total": total})
 		return
 	}
 	// no total -> 308
 	w.Header().Set("Range", fmt.Sprintf("bytes=0-%d", uploaded-1))
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(308)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "resume", "uploaded": uploaded})
+	writeJSON(w, r, http.StatusPermanentRedirect, map[string]interface{}{"status": "resume", "uploaded": uploaded})
 }
 
 // Ensure interface compliance at compile time
