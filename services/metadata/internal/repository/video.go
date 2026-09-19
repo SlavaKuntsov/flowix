@@ -64,7 +64,9 @@ func (r *VideoRepo) GetByID(ctx context.Context, id string) (*model.Video, error
 // List returns videos visible to viewerID: everyone sees public, the owner
 // also sees their own private/unlisted (issue #44). Empty viewerID = anonymous.
 func (r *VideoRepo) List(ctx context.Context, limit, offset int, viewerID string) ([]model.Video, error) {
-	q := `SELECT v.id, v.owner_id, u.email, v.title, v.description, v.duration, v.status, COALESCE(v.visibility::text,'public'), v.thumbnail_s3_key, v.created_at, v.updated_at FROM videos v LEFT JOIN users u ON u.id=v.owner_id WHERE v.visibility='public' OR ($3 <> '' AND v.owner_id=$3) ORDER BY v.created_at DESC LIMIT $1 OFFSET $2`
+	// $3 участвует и в текстовом сравнении ($3 <> ''), и в сравнении с uuid-колонкой:
+	// без ::uuid Postgres выводит тип $3 как text и падает с SQLSTATE 42883 (uuid = text)
+	q := `SELECT v.id, v.owner_id, u.email, v.title, v.description, v.duration, v.status, COALESCE(v.visibility::text,'public'), v.thumbnail_s3_key, v.created_at, v.updated_at FROM videos v LEFT JOIN users u ON u.id=v.owner_id WHERE v.visibility='public' OR ($3 <> '' AND v.owner_id=$3::uuid) ORDER BY v.created_at DESC LIMIT $1 OFFSET $2`
 	rows, err := r.pool.Query(ctx, q, limit, offset, viewerID)
 	if err != nil {
 		return nil, err
