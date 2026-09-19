@@ -58,6 +58,7 @@ Each service has its own `Dockerfile` and can be developed independently. Go-с�
 
 ### 1. API Gateway (Go)
 - **Purpose**: Single entry point for client requests; routes to appropriate services; handles CORS, rate limiting, request aggregation.
+- **Security (issue #52)**: CORS — явный allowlist origin (`CORS_ALLOWED_ORIGINS`, без wildcard с credentials); rate-limit — fixed-window в Redis (`REDIS_URL`), fail-open при недоступности Redis; `X-Forwarded-For`/`X-Real-IP` доверяются только от trusted прокси (`TRUSTED_PROXY_CIDRS`), downstream получает проверенный `X-Real-IP` (по нему ключует лимитер auth).
 - **Framework**: Gin, Echo, or chi.
 - **Communication**: REST or gRPC to internal services.
 

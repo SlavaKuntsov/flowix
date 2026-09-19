@@ -79,20 +79,12 @@ func (w *respWriter) Flush() {
 	}
 }
 
-// ClientIP извлекает IP клиента из X-Forwarded-For / X-Real-IP,
-// в крайнем случае из RemoteAddr. Учитывает X-Forwarded-For
-// (когда gateway за CDN / LB).
+// ClientIP извлекает IP клиента для логов. Клиентский X-Forwarded-For не
+// доверяем (первый IP подделывается, issue #52): берём X-Real-IP — его
+// выставляет gateway-RealIP из проверенного peer'а и затирает клиентские
+// подделки, — иначе RemoteAddr (за gateway это peer самого gateway).
 func ClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// берём первый IP
-		for i, c := range xff {
-			if c == ',' {
-				return strings.TrimSpace(xff[:i])
-			}
-		}
-		return strings.TrimSpace(xff)
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" && net.ParseIP(xri) != nil {
 		return xri
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

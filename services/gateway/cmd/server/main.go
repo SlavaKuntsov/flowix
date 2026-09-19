@@ -1,13 +1,16 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 
 	"flowix/gateway/internal/handler"
@@ -28,6 +31,10 @@ type routerConfig struct {
 	metadataURL    string
 	uploadURL      string
 	vodURL         string
+	// issue #52: CORS allowlist, trusted proxy CIDRs, Redis для rate-limit
+	corsOrigins []string
+	trusted     []*net.IPNet
+	rdb         *redis.Client
 }
 
 func main() {
@@ -45,6 +52,22 @@ func main() {
 	uploadURL := envOr("UPLOAD_URL", "http://upload:8003")
 	vodURL := envOr("VOD_URL", "http://nginx-vod:80")
 
+	// issue #52: CORS — явный allowlist (пусто = никому, без wildcard),
+	// XFF доверяем только от trusted прокси, rate-limit в Redis
+	corsOrigins := parseCommaList(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	trusted, err := gwmw.ParseTrustedCIDRS(envOr("TRUSTED_PROXY_CIDRS", "172.16.0.0/12"))
+	if err != nil {
+		log.Fatal().Err(err).Str("env", "TRUSTED_PROXY_CIDRS").Msg("invalid trusted proxy CIDR list")
+	}
+	var rdb *redis.Client
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		opts, err := redis.ParseURL(redisURL)
+		if err != nil {
+			log.Fatal().Err(err).Str("env", "REDIS_URL").Msg("invalid redis url")
+		}
+		rdb = redis.NewClient(opts)
+	}
+
 	// also support legacy AUTH_URL without port fallback
 	if authURL == "http://auth:8000" {
 		authURL = "http://auth:8001"
@@ -61,7 +84,17 @@ func main() {
 		metadataURL:    metadataURL,
 		uploadURL:      uploadURL,
 		vodURL:         vodURL,
+		corsOrigins:    corsOrigins,
+		trusted:        trusted,
+		rdb:            rdb,
 	})
+
+	if rdb == nil {
+		logger.Warn().Msg("REDIS_URL is empty — rate limit disabled (fail-open)")
+	}
+	if len(corsOrigins) == 0 {
+		logger.Warn().Msg("CORS_ALLOWED_ORIGINS is empty — no CORS headers will be sent")
+	}
 
 	logger.Info().
 		Str("port", port).
@@ -93,12 +126,15 @@ func newRouter(cfg routerConfig) *chi.Mux {
 	r := chi.NewRouter()
 	// базовые chi middleware
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// issue #52: вместо chi middleware.RealIP (слепо доверяет XFF) — trusted RealIP:
+	// RemoteAddr/X-Real-IP переписываются только от TRUSTED_PROXY_CIDRS
+	r.Use(gwmw.RealIP(cfg.trusted))
 	r.Use(middleware.Recoverer)
 	// gateway middleware: CORS + RateLimit + RequestLogger (zerolog)
-	// CORS allow all for MVP (frontend :3000)
-	r.Use(gwmw.CORS([]string{"*"}, nil, nil))
-	r.Use(gwmw.RateLimit(20, 40))
+	// CORS — явный allowlist из CORS_ALLOWED_ORIGINS (issue #52, пусто = без CORS)
+	r.Use(gwmw.CORS(cfg.corsOrigins, nil, nil))
+	// rate-limit — fixed-window в Redis, ключ по проверенному client IP (issue #52)
+	r.Use(gwmw.RateLimit(20, 40, cfg.rdb, cfg.trusted, log.With().Str("service", "gateway").Logger()))
 	r.Use(pkgmw.RequestLogger("gateway"))
 
 	// health — без прокси, без rate-limit (rate-limit уже пропускает /health)
@@ -203,6 +239,18 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// parseCommaList — comma-separated env (CORS_ALLOWED_ORIGINS) → список,
+// пустые элементы и пробелы отбрасываются.
+func parseCommaList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // requireEnv reads a mandatory env var and exits with a clear error when it is

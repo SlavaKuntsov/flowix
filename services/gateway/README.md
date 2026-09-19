@@ -17,6 +17,23 @@ make fmt-go
 make lint-go
 ```
 
+## CORS и rate-limit (issue #52)
+
+- **CORS** — только явный allowlist: `CORS_ALLOWED_ORIGINS` (comma-separated,
+  dev-дефолт `http://localhost:3000`). Origin из списка → отражаем его в
+  `Access-Control-Allow-Origin` (+ `Vary: Origin`, credentials включены).
+  Чужой origin или пустой список → ACAO-заголовков нет вообще; wildcard `*`
+  не поддерживается.
+- **Rate-limit** — fixed-window 20rps/burst 40 на Redis (`REDIS_URL`,
+  атомарный Lua-скрипт): состояние общее для всех инстансов gateway.
+  Redis недоступен → fail-open (availability over strictness), warn в лог
+  не чаще раза в минуту.
+- **XFF-доверие** — `X-Forwarded-For`/`X-Real-IP` учитываются только если
+  непосредственный пир в `TRUSTED_PROXY_CIDRS` (дефолт `172.16.0.0/12` —
+  docker-сеть); подделка XFF клиентом не влияет на ключ лимитера.
+  Проверенный клиентский IP выставляется в `X-Real-IP` для downstream —
+  auth ключует свой slowapi-лимитер по нему.
+
 ## Zed IDE
 См. `services/metadata/README.md` — Go `gopls` автоформат при сохранении.
 

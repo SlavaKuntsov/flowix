@@ -38,6 +38,12 @@ uv run --project services/auth pytest -q
 uv run --project services/auth pytest --cov
 ```
 
+## Rate-limit (issue #52)
+`/api/v1/auth/login` — slowapi 5/minute, Redis storage (`REDIS_URL`).
+Ключ лимитера — реальный IP клиента из `X-Real-IP`, который выставляет gateway
+(затирая клиентские подделки); прямой доступ минуя gateway ключуется по peer IP.
+Без этого один абузер блокировал бы всех (slowapi видел только IP gateway).
+
 ## Zed IDE (при сохранении)
 Настроено в `.zed/settings.json:1`:
 - `Python` → `pyright` + `ruff`, `format_on_save: on`

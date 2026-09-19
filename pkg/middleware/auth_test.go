@@ -202,14 +202,24 @@ func TestOptionalAuthRejectsRefreshToken(t *testing.T) {
 }
 
 func TestClientIPForwardedFor(t *testing.T) {
+	// issue #52: клиентский XFF подделываем — не используем его для логов
 	r := httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("X-Forwarded-For", " 203.0.113.7 , 10.0.0.1")
-	if got := ClientIP(r); got != "203.0.113.7" {
-		t.Fatalf("want first XFF ip, got %q", got)
+	r.RemoteAddr = "192.0.2.10:5555"
+	if got := ClientIP(r); got != "192.0.2.10" {
+		t.Fatalf("XFF must be ignored, want RemoteAddr ip, got %q", got)
 	}
 	r2 := httptest.NewRequest("GET", "/", nil)
 	r2.Header.Set("X-Real-IP", "198.51.100.2")
+	r2.RemoteAddr = "192.0.2.10:5555"
 	if got := ClientIP(r2); got != "198.51.100.2" {
 		t.Fatalf("want X-Real-IP, got %q", got)
+	}
+	// не-IP в X-Real-IP — не доверяем, падаем на RemoteAddr
+	r3 := httptest.NewRequest("GET", "/", nil)
+	r3.Header.Set("X-Real-IP", "not-an-ip")
+	r3.RemoteAddr = "192.0.2.10:5555"
+	if got := ClientIP(r3); got != "192.0.2.10" {
+		t.Fatalf("invalid X-Real-IP must be ignored, got %q", got)
 	}
 }

@@ -299,6 +299,10 @@ services:
       VOD_URL: http://nginx-vod:80
       # grace для Shutdown меньше stop_grace_period (issue #63)
       SHUTDOWN_GRACE: 4m
+      # issue #52: CORS allowlist, trusted proxy CIDRs, Redis rate-limit
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     depends_on:
@@ -309,6 +313,8 @@ services:
       upload:
         condition: service_healthy
       nginx-vod:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:

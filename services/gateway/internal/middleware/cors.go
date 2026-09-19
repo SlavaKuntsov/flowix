@@ -4,8 +4,11 @@ import "net/http"
 
 // CORS возвращает middleware, который добавляет CORS-заголовки и обрабатывает preflight.
 //
-// Логика: проверяем origin — если задан список allowedOrigins, то только они
-// (или "*" для любого). Иначе отражаем origin запроса — простой подход для MVP.
+// Логика (issue #52): только явный allowlist origin (CORS_ALLOWED_ORIGINS) —
+// wildcard «*» вместе с Allow-Credentials запрещён. Origin из списка →
+// отражаем его в Access-Control-Allow-Origin (+ Vary: Origin). Чужой origin →
+// вообще без ACAO-заголовков. Пустой список → CORS-заголовков нет никому
+// (safe default, без wildcard).
 func CORS(allowedOrigins []string, allowedMethods []string, allowedHeaders []string) func(http.Handler) http.Handler {
 	if len(allowedMethods) == 0 {
 		allowedMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
@@ -13,11 +16,12 @@ func CORS(allowedOrigins []string, allowedMethods []string, allowedHeaders []str
 	if len(allowedHeaders) == 0 {
 		allowedHeaders = []string{"Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With", "Range"}
 	}
-	allowAll := len(allowedOrigins) == 0
+	// точное совпадение origin; wildcard "*" не поддерживается —
+	// пустой/чужой список = без ACAO
+	allowed := make(map[string]struct{}, len(allowedOrigins))
 	for _, o := range allowedOrigins {
-		if o == "*" {
-			allowAll = true
-			break
+		if o != "" && o != "*" {
+			allowed[o] = struct{}{}
 		}
 	}
 	// precompute header values
@@ -39,26 +43,17 @@ func CORS(allowedOrigins []string, allowedMethods []string, allowedHeaders []str
 				return
 			}
 
-			allowed := allowAll
-			if !allowAll {
-				for _, o := range allowedOrigins {
-					if o == origin {
-						allowed = true
-						break
-					}
-				}
-			}
-			if allowed {
+			// для кэша вариантность нужна в обоих случаях (в т.ч. при отказе)
+			w.Header().Set("Vary", "Origin")
+			if _, ok := allowed[origin]; ok {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
-				// для кэша вариантности
-				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Access-Control-Allow-Methods", methodsVal)
+				w.Header().Set("Access-Control-Allow-Headers", headersVal)
+				w.Header().Set("Access-Control-Max-Age", "86400")
+				// expose useful headers for hls / upload
+				w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Type, X-Request-Id")
 			}
-			w.Header().Set("Access-Control-Allow-Methods", methodsVal)
-			w.Header().Set("Access-Control-Allow-Headers", headersVal)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Max-Age", "86400")
-			// expose useful headers for hls / upload
-			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Type, X-Request-Id")
 
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)

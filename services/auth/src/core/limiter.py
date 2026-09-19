@@ -1,4 +1,7 @@
+import ipaddress
 import os
+
+from fastapi import Request
 
 from .config import settings
 
@@ -8,11 +11,26 @@ try:
 
     _redis_url = os.getenv("REDIS_URL") or settings.redis_url
 
+    def _client_ip(request: Request) -> str:
+        """Ключ лимитера — реальный IP клиента (issue #52).
+
+        Gateway выставляет проверенный X-Real-IP (затирая клиентские
+        подделки) — ключуем по нему, иначе slowapi видит только IP gateway
+        и один абузер блокирует всех. Некорректные значения игнорируем,
+        прямой доступ к auth (минуя gateway) ключуется по peer IP.
+        """
+        real_ip = request.headers.get("X-Real-IP", "")
+        try:
+            ipaddress.ip_address(real_ip)
+            return real_ip
+        except ValueError:
+            return get_remote_address(request)
+
     def _make_limiter(url: str | None):  # type: ignore[no-untyped-def]
         try:
             if url and url.startswith("redis"):
                 # probe redis connectivity — fallback to memory if unreachable
-                lim = Limiter(key_func=get_remote_address, storage_uri=url, default_limits=[])  # type: ignore[no-untyped-call]
+                lim = Limiter(key_func=_client_ip, storage_uri=url, default_limits=[])  # type: ignore[no-untyped-call]
                 # quick storage check: try to get reset without network if possible
                 try:
                     # try a dummy operation; if redis not reachable, this will raise
@@ -28,11 +46,11 @@ try:
                     s.close()
                 except Exception:
                     # redis not reachable — use memory
-                    return Limiter(key_func=get_remote_address, default_limits=[])  # type: ignore[no-untyped-call]
+                    return Limiter(key_func=_client_ip, default_limits=[])  # type: ignore[no-untyped-call]
                 return lim
-            return Limiter(key_func=get_remote_address, default_limits=[])  # type: ignore[no-untyped-call]
+            return Limiter(key_func=_client_ip, default_limits=[])  # type: ignore[no-untyped-call]
         except Exception:
-            return Limiter(key_func=get_remote_address, default_limits=[])  # type: ignore[no-untyped-call]
+            return Limiter(key_func=_client_ip, default_limits=[])  # type: ignore[no-untyped-call]
 
     limiter: Limiter | None = _make_limiter(_redis_url)
 except ImportError:
