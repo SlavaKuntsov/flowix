@@ -46,6 +46,8 @@ FFMPEG_THREADS=2 FFMPEG_PRESET=veryfast python -m app.consumer
 
 ## Лимиты
 - Последовательный рендеринг (было 3× parallel → OOM), `timeout 900`, `fps` из probe (≤30 preserve, >30 cap 30), `-threads 2 -preset veryfast -maxrate 1.10×`
+- Pipe-режим: при ошибке стрима/таймауте ffmpeg SIGKILL-ится и реапится (`_kill_and_reap`, issue #51) — без зомби
+- Heartbeat: `_HeartbeatKeeper` (daemon-поток, `process_data_events` каждые 30с) держит pika-соединение живым во время длинных транскодов (issue #51)
 - `shutil.disk_usage` чек, `SIGTERM` graceful, `deploy/docker-compose.yml:179` + `prod.yml:44` limits `cpus 2 / mem 4G`
 - `.env.example:30` `FFMPEG_THREADS`/`FFMPEG_PRESET`, `make dev-transcoder` теперь `python -m app.consumer` (celery legacy `make dev-transcoder-celery`)
 

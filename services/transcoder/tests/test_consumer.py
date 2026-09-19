@@ -1,4 +1,6 @@
 import json
+import subprocess
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -441,3 +443,122 @@ def test_handle_message_moves_to_dlq_after_max_retries():
         ch.basic_nack.assert_called_once_with(delivery_tag=7, requeue=False)
         ch.basic_ack.assert_not_called()
         ch.basic_publish.assert_not_called()
+
+
+class _FakeProc:
+    """Minimal Popen stand-in with tracked kill/wait/communicate (issue #51).
+
+    Behaves like a real process: poll() returns None while alive, kill() makes
+    it exit (SIGKILL), wait()/communicate() reap it.
+    """
+
+    def __init__(self, returncode: int = 0, communicate_raises: Exception | None = None):
+        self.stdin = MagicMock()
+        self.pid = 4242
+        self.returncode: int | None = None
+        self._exit_code = returncode
+        self._communicate_raises = communicate_raises
+        self.kill_calls = 0
+        self.wait_calls = 0
+        self.communicate_calls = 0
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self.returncode = -9
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls += 1
+        assert self.returncode is not None, "wait() on a live process would block"
+        return self.returncode
+
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        self.communicate_calls += 1
+        if self._communicate_raises is not None and self.returncode is None:
+            raise self._communicate_raises
+        if self.returncode is None:
+            self.returncode = self._exit_code
+        return b"out", b"err"
+
+
+class _BrokenStream:
+    """MinIO-like stream that dies mid-feed with an error."""
+
+    def __init__(self):
+        self.closed = False
+
+    def stream(self, chunk_size: int):
+        yield b"chunk"
+        raise OSError("stream broken")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_transcode_one_pipe_success_does_not_kill_ffmpeg():
+    proc = _FakeProc(returncode=0)
+    stream = MagicMock()
+    with patch("app.consumer.subprocess.Popen", return_value=proc):
+        cons.transcode_one_pipe(stream, None, "/tmp/out.mp4", 1280, 720, 800)
+    assert proc.kill_calls == 0
+    assert proc.wait_calls == 0
+    proc.stdin.close.assert_called_once()
+    stream.close.assert_called_once()
+
+
+def test_transcode_one_pipe_stream_error_kills_and_reaps_ffmpeg():
+    # issue #51 verify: stream failure mid-feed -> ffmpeg killed AND waited/reaped, no zombie
+    proc = _FakeProc()
+    stream = _BrokenStream()
+    with patch("app.consumer.subprocess.Popen", return_value=proc):
+        with pytest.raises(OSError, match="stream broken"):
+            cons.transcode_one_pipe(stream, None, "/tmp/out.mp4", 1280, 720, 800)
+    assert proc.kill_calls == 1
+    assert proc.wait_calls == 1
+    assert proc.returncode == -9  # reaped
+    assert stream.closed
+
+
+def test_transcode_one_pipe_timeout_kills_and_reaps_ffmpeg():
+    # issue #51: communicate(timeout=900) fires -> kill, collect output via
+    # communicate() again (reaps), and propagate TimeoutExpired
+    proc = _FakeProc(communicate_raises=subprocess.TimeoutExpired("ffmpeg", 900))
+    stream = MagicMock()
+    with patch("app.consumer.subprocess.Popen", return_value=proc):
+        with pytest.raises(subprocess.TimeoutExpired):
+            cons.transcode_one_pipe(stream, None, "/tmp/out.mp4", 1280, 720, 800)
+    assert proc.kill_calls == 1
+    assert proc.communicate_calls == 2  # retry after kill to drain output and reap
+    assert proc.returncode == -9
+
+
+def test_transcode_one_pipe_nonzero_exit_raises_and_skips_kill():
+    # ffmpeg already exited on its own -> only CalledProcessError, no kill needed
+    proc = _FakeProc(returncode=1)
+    stream = MagicMock()
+    with patch("app.consumer.subprocess.Popen", return_value=proc):
+        with pytest.raises(subprocess.CalledProcessError):
+            cons.transcode_one_pipe(stream, None, "/tmp/out.mp4", 1280, 720, 800)
+    assert proc.kill_calls == 0
+    assert proc.wait_calls == 0
+    stream.close.assert_called_once()
+
+
+def test_heartbeat_keeper_pokes_connection_periodically():
+    # issue #51: keeper must drive process_data_events while the transcode blocks
+    conn = MagicMock()
+    with cons._HeartbeatKeeper(conn, interval=0.05):
+        time.sleep(0.12)
+    assert conn.process_data_events.call_count >= 1
+    assert conn.process_data_events.call_args[1]["time_limit"] == 0
+
+
+def test_heartbeat_keeper_swallows_poke_errors_and_stops():
+    # a dead connection must not crash the worker thread — main loop handles it
+    conn = MagicMock()
+    conn.process_data_events.side_effect = Exception("connection closed")
+    with cons._HeartbeatKeeper(conn, interval=0.02):
+        time.sleep(0.08)  # must not raise
+    assert conn.process_data_events.call_count == 1  # stopped after the first failure

@@ -5,7 +5,9 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
+from typing import Any
 
 import pika  # type: ignore[import-untyped]
 from pika.exceptions import AMQPConnectionError  # type: ignore[import-untyped]
@@ -432,6 +434,19 @@ def transcode_one(
             pass
 
 
+def _kill_and_reap(proc: subprocess.Popen) -> None:
+    """SIGKILL an ffmpeg subprocess and reap it so it cannot linger as a zombie (issue #51).
+
+    Safe to call on an already-exited process (skips kill, still waits to reap).
+    """
+    try:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+    except Exception as e:
+        log.error("failed to kill/reap ffmpeg pid=%s: %s", proc.pid, e)
+
+
 def transcode_one_pipe(
     get_object_stream,
     audio_path: str | None,
@@ -518,40 +533,56 @@ def transcode_one_pipe(
     proc = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
+    stdout: bytes | None = None
+    stderr: bytes | None = None
     try:
-        # stream MinIO object to ffmpeg stdin in chunks
-        chunk_size = 256 * 1024
-        # get_object_stream may be response object with stream() or read()
-        if hasattr(get_object_stream, "stream"):
-            # minio get_object returns HTTPResponse with stream()
-            assert proc.stdin is not None
-            for chunk in get_object_stream.stream(chunk_size):
-                if chunk:
+        try:
+            # stream MinIO object to ffmpeg stdin in chunks
+            chunk_size = 256 * 1024
+            # get_object_stream may be response object with stream() or read()
+            if hasattr(get_object_stream, "stream"):
+                # minio get_object returns HTTPResponse with stream()
+                assert proc.stdin is not None
+                for chunk in get_object_stream.stream(chunk_size):
+                    if chunk:
+                        proc.stdin.write(chunk)
+                proc.stdin.close()
+            elif hasattr(get_object_stream, "read"):
+                assert proc.stdin is not None
+                while True:
+                    chunk = get_object_stream.read(chunk_size)
+                    if not chunk:
+                        break
                     proc.stdin.write(chunk)
-            proc.stdin.close()
-        elif hasattr(get_object_stream, "read"):
-            assert proc.stdin is not None
-            while True:
-                chunk = get_object_stream.read(chunk_size)
-                if not chunk:
-                    break
-                proc.stdin.write(chunk)
-            proc.stdin.close()
-        else:
-            # iterable
-            assert proc.stdin is not None
-            for chunk in get_object_stream:
-                proc.stdin.write(chunk)
-            proc.stdin.close()
-        stdout, stderr = proc.communicate(timeout=900)
+                proc.stdin.close()
+            else:
+                # iterable
+                assert proc.stdin is not None
+                for chunk in get_object_stream:
+                    proc.stdin.write(chunk)
+                proc.stdin.close()
+            stdout, stderr = proc.communicate(timeout=900)
+        except subprocess.TimeoutExpired:
+            # issue #51: ffmpeg outlived its budget — kill it, collect output, re-raise
+            log.warning("ffmpeg pipe timed out after 900s, killing pid=%s", proc.pid)
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            raise subprocess.TimeoutExpired(cmd, 900, output=stdout, stderr=stderr)
+        except Exception:
+            # issue #51: stream error mid-feed (or communicate failure) — never leave ffmpeg running
+            _kill_and_reap(proc)
+            raise
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
         if METRICS_AVAILABLE and ffmpeg_duration_metric is not None:
             try:
                 ffmpeg_duration_metric.labels(quality=f"{height}p").observe(time.time() - start)
             except Exception:
                 pass
-        if proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
     finally:
+        # belt-and-braces (issue #51): reap anything that survived the paths above — no zombies
+        if proc.poll() is None:
+            _kill_and_reap(proc)
         try:
             if proc.stdin and not proc.stdin.closed:
                 proc.stdin.close()
@@ -870,6 +901,47 @@ def _get_status(video_id: str) -> str | None:
     return None
 
 
+class _HeartbeatKeeper:
+    """Keep the pika BlockingConnection alive during long-blocking transcodes (issue #51).
+
+    BlockingConnection only processes heartbeat frames inside
+    process_data_events(); a transcode blocks that loop for minutes, so the
+    broker closes the connection (600s heartbeat vs 900s x 3 ffmpeg runs).
+    A daemon thread pokes the connection every `interval` seconds. All pika
+    calls in handle_message happen outside the context manager, so the main
+    thread and the keeper never drive the connection at the same time.
+    """
+
+    def __init__(self, connection: Any, interval: float = 30.0):
+        self._conn = connection
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> "_HeartbeatKeeper":
+        self._thread = threading.Thread(target=self._run, daemon=True, name="pika-heartbeat")
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                self._conn.process_data_events(time_limit=0)
+            except Exception as e:
+                log.warning("heartbeat poke failed: %s", e)
+                return  # main thread will observe the real AMQP error
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any,
+    ) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+
+
 def handle_message(ch, method, properties, body):
     """Ack only after process_message succeeds (including the ready metadata update).
 
@@ -887,7 +959,11 @@ def handle_message(ch, method, properties, body):
         except Exception:
             retry_count = 0
     try:
-        process_message(body)
+        # issue #51: process_message blocks the pika dispatch loop for minutes
+        # (ffmpeg 900s x 3) — poke the connection from a daemon thread so the
+        # broker does not close it on heartbeat timeout.
+        with _HeartbeatKeeper(ch.connection):
+            process_message(body)
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as e:
         log.exception("process failed: %s", e)
@@ -949,6 +1025,8 @@ def main():
     params = pika.URLParameters(RABBITMQ_URL)
     # Phase 10 fix: long transcoding (2GB ~5min) blocks heartbeat thread → broker closes connection (104).
     # Default heartbeat 60s is too short; set to 600s (10min) to cover 5-6GB files. For larger files Phase 11 will use chunked.
+    # Issue #51: 600s still loses to ffmpeg 900s x 3 — _HeartbeatKeeper pokes the
+    # connection from a daemon thread while process_message runs.
     params.heartbeat = 600
     params.blocked_connection_timeout = 300
     while not _shutdown:
