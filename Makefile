@@ -7,7 +7,7 @@ COMPOSE=docker compose --env-file .env -f deploy/docker-compose.yml
 
 up:
 	$(COMPOSE) up --build -d
-	@echo "infra: postgres :5432, minio :9000/:9001, rabbit :5672/:15672, gateway :8080 (hls; nginx-vod internal), prometheus :9090, grafana :3001, loki :3100, transcoder :8004/metrics"
+	@echo "infra: postgres :5432 (loopback), minio :9000/:9001 (loopback), rabbit :5672/:15672 (loopback), redis :6379 (loopback, requirepass), gateway :8080, frontend :3000, prometheus :9090, grafana :3001, loki :3100 (loopback); auth/metadata/upload 8001-8003 не публикуются (issue #55) — e2e через gateway"
 
 up-frontend:
 	$(COMPOSE) up --build -d frontend
