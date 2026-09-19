@@ -11,11 +11,12 @@ import (
 	"strconv"
 	"strings"
 
-	"flowix/upload/internal/metrics"
-	mw "flowix/upload/internal/middleware"
+	"flowix/pkg/metrics"
+	mw "flowix/pkg/middleware"
 )
 
-// UploadHandler dependencies as interfaces — T3 stepwise fakes without MinIO/RabbitMQ.
+// Storage abstracts the object store used by upload handlers — stepwise
+// fakes in tests work without MinIO/RabbitMQ.
 type Storage interface {
 	PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
 }

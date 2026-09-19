@@ -3,7 +3,7 @@
 # .env — единственный в корне, compose явно указывает на него (--env-file), deploy/.env не нужен
 COMPOSE=docker compose --env-file .env -f deploy/docker-compose.yml
 
-.PHONY: up down logs ps build lint fmt test e2e e2e-file swagger swagger-install sync-py migrate-up migrate-down migrate-create migrate-alembic-up metrics loki-logs grafana prometheus
+.PHONY: up down logs ps build lint lint-report fmt test e2e e2e-file swagger swagger-install sync-py migrate-up migrate-down migrate-create migrate-alembic-up metrics loki-logs grafana prometheus
 
 up:
 	$(COMPOSE) up --build -d
@@ -41,27 +41,27 @@ build:
 	$(COMPOSE) build
 
 # Go — локально если установлено, иначе через Docker (golang:1.27, golangci-lint)
-# Каждый сервис — отдельный go.mod, поэтому линтим per-service
+# Каждый модуль — отдельный go.mod (pkg + сервисы), поэтому линтим per-module
 lint-go:
-	@for svc in metadata gateway upload; do \
-	  echo "==> lint $$svc"; \
+	@for dir in pkg services/metadata services/gateway services/upload; do \
+	  echo "==> lint $$dir"; \
 	  if which golangci-lint >/dev/null 2>&1; then \
-	    (cd services/$$svc && golangci-lint run ./...) || exit 1; \
+	    (cd $$dir && golangci-lint run ./...) || exit 1; \
 	  else \
-	    docker run --rm -v $(PWD):/app -w /app/services/$$svc golangci/golangci-lint:latest golangci-lint run ./... || exit 1; \
+	    docker run --rm -v $(PWD):/app -w /app/$$dir golangci/golangci-lint:latest golangci-lint run ./... || exit 1; \
 	  fi; \
 	done
 
 fmt-go:
-	@which gofmt >/dev/null 2>&1 && gofmt -w services/ || docker run --rm -v $(PWD):/app -w /app golang:1.27-alpine gofmt -w ./services
+	@which gofmt >/dev/null 2>&1 && gofmt -w services/ pkg/ || docker run --rm -v $(PWD):/app -w /app golang:1.27-alpine gofmt -w ./services ./pkg
 
 test-go:
-	@for svc in metadata gateway upload; do \
-	  echo "==> test $$svc"; \
+	@for dir in pkg services/metadata services/gateway services/upload; do \
+	  echo "==> test $$dir"; \
 	  if which go >/dev/null 2>&1; then \
-	    (cd services/$$svc && go test ./...) || exit 1; \
+	    (cd $$dir && go test ./...) || exit 1; \
 	  else \
-	    docker run --rm -v $(PWD):/app -w /app/services/$$svc golang:1.27-alpine go test ./... || exit 1; \
+	    docker run --rm -v $(PWD):/app -w /app/$$dir golang:1.27-alpine go test ./... || exit 1; \
 	  fi; \
 	done
 
@@ -118,6 +118,29 @@ dev-frontend:
 # Frontend
 lint-front:
 	cd frontend && npm run lint
+
+# Ошибки и варнинги всех проектов одним списком (file:line: message) — удобно копировать целиком.
+# Не падает на первой ошибке; полный отчёт дублируется в /tmp/flowix-diagnostics.txt
+lint-report:
+	@: > /tmp/flowix-diagnostics.txt
+	@ROOT=$$(pwd); \
+	for dir in pkg services/metadata services/gateway services/upload; do \
+	  echo "==> go: $$dir" | tee -a /tmp/flowix-diagnostics.txt; \
+	  if which golangci-lint >/dev/null 2>&1; then \
+	    (cd $$dir && golangci-lint run -c $$ROOT/.golangci.strict.yaml ./...) 2>&1 | tee -a /tmp/flowix-diagnostics.txt; \
+	  else \
+	    echo "golangci-lint not installed, skip go ($$dir)" | tee -a /tmp/flowix-diagnostics.txt; \
+	  fi; \
+	done
+	@echo "==> py: auth (flake8 + mypy)" | tee -a /tmp/flowix-diagnostics.txt
+	@uv run --project services/auth flake8 services/auth/src 2>&1 | tee -a /tmp/flowix-diagnostics.txt
+	@uv run --project services/auth mypy services/auth/src 2>&1 | tee -a /tmp/flowix-diagnostics.txt
+	@echo "==> py: transcoder (flake8 + mypy)" | tee -a /tmp/flowix-diagnostics.txt
+	@uv run --project services/transcoder flake8 services/transcoder/app 2>&1 | tee -a /tmp/flowix-diagnostics.txt
+	@uv run --project services/transcoder mypy services/transcoder/app 2>&1 | tee -a /tmp/flowix-diagnostics.txt
+	@echo "==> frontend (next lint)" | tee -a /tmp/flowix-diagnostics.txt
+	@(cd frontend && npm run lint) 2>&1 | tee -a /tmp/flowix-diagnostics.txt
+	@echo "report saved: /tmp/flowix-diagnostics.txt"
 
 fmt-front:
 	cd frontend && npm run format || npx prettier --write .

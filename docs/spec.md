@@ -33,6 +33,9 @@ The backend is split into microservices written in **Go** and **Python** to leve
 
 ```
 .
+├── go.work                    # Go workspace: pkg + три Go-сервиса (issue #63)
+├── pkg/                       # Shared Go module (flowix/pkg): auth middleware, request logger,
+│                              #   metrics, httputil.WriteJSON, httpserver (таймауты + graceful shutdown)
 ├── services/
 │   ├── gateway/               # Go (API Gateway)
 │   ├── metadata/              # Go (Metadata Service)
@@ -47,7 +50,7 @@ The backend is split into microservices written in **Go** and **Python** to leve
 └── README.md
 ```
 
-Each service has its own `Dockerfile` and can be developed independently.
+Each service has its own `Dockerfile` and can be developed independently. Go-сервисы используют общий модуль `pkg/` (через `replace` в go.mod + `go.work` локально; build context в compose — корень репо). Все HTTP-серверы запускаются через `pkg/httpserver` — таймауты Read/Write/Idle и graceful shutdown по SIGTERM/SIGINT (issue #63).
 
 ---
 
@@ -55,6 +58,7 @@ Each service has its own `Dockerfile` and can be developed independently.
 
 ### 1. API Gateway (Go)
 - **Purpose**: Single entry point for client requests; routes to appropriate services; handles CORS, rate limiting, request aggregation.
+- **Security (issue #52)**: CORS — явный allowlist origin (`CORS_ALLOWED_ORIGINS`, без wildcard с credentials); rate-limit — fixed-window в Redis (`REDIS_URL`), fail-open при недоступности Redis; `X-Forwarded-For`/`X-Real-IP` доверяются только от trusted прокси (`TRUSTED_PROXY_CIDRS`), downstream получает проверенный `X-Real-IP` (по нему ключует лимитер auth).
 - **Framework**: Gin, Echo, or chi.
 - **Communication**: REST or gRPC to internal services.
 

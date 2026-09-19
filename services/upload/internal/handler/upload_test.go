@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	mw "flowix/upload/internal/middleware"
+	mw "flowix/pkg/middleware"
 
 	"github.com/golang-jwt/jwt/v5"
 )

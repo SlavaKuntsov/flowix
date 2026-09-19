@@ -139,9 +139,10 @@ func TestOptionalAuthStripsForgedUserID(t *testing.T) {
 
 func TestOptionalAuthSetsUserIDFromJWT(t *testing.T) {
 	secret := "test-secret"
-	var sawHeader string
+	var sawHeader, sawCtx string
 	h := OptionalAuth(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawHeader = r.Header.Get("X-User-ID")
+		sawCtx = UserIDFromCtx(r.Context())
 		w.WriteHeader(200)
 	}))
 	req := httptest.NewRequest("GET", "/", nil)
@@ -149,8 +150,8 @@ func TestOptionalAuthSetsUserIDFromJWT(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+mustToken(secret, "u1"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
-	if w.Code != 200 || sawHeader != "u1" {
-		t.Fatalf("valid JWT must set X-User-ID=u1, got %q (code %d)", sawHeader, w.Code)
+	if w.Code != 200 || sawHeader != "u1" || sawCtx != "u1" {
+		t.Fatalf("valid JWT must set X-User-ID=u1, got header %q ctx %q (code %d)", sawHeader, sawCtx, w.Code)
 	}
 }
 
@@ -197,5 +198,28 @@ func TestOptionalAuthRejectsRefreshToken(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != 200 || !called || sawHeader != "" {
 		t.Fatalf("refresh token must be anonymous, got code %d called %v header %q", w.Code, called, sawHeader)
+	}
+}
+
+func TestClientIPForwardedFor(t *testing.T) {
+	// issue #52: клиентский XFF подделываем — не используем его для логов
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("X-Forwarded-For", " 203.0.113.7 , 10.0.0.1")
+	r.RemoteAddr = "192.0.2.10:5555"
+	if got := ClientIP(r); got != "192.0.2.10" {
+		t.Fatalf("XFF must be ignored, want RemoteAddr ip, got %q", got)
+	}
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.Header.Set("X-Real-IP", "198.51.100.2")
+	r2.RemoteAddr = "192.0.2.10:5555"
+	if got := ClientIP(r2); got != "198.51.100.2" {
+		t.Fatalf("want X-Real-IP, got %q", got)
+	}
+	// не-IP в X-Real-IP — не доверяем, падаем на RemoteAddr
+	r3 := httptest.NewRequest("GET", "/", nil)
+	r3.Header.Set("X-Real-IP", "not-an-ip")
+	r3.RemoteAddr = "192.0.2.10:5555"
+	if got := ClientIP(r3); got != "192.0.2.10" {
+		t.Fatalf("invalid X-Real-IP must be ignored, got %q", got)
 	}
 }

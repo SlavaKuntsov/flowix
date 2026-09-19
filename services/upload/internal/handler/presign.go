@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"flowix/upload/internal/metrics"
-	mw "flowix/upload/internal/middleware"
+	"flowix/pkg/metrics"
+	mw "flowix/pkg/middleware"
 	"github.com/go-chi/chi/v5"
 )
 

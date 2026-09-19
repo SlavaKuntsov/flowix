@@ -64,3 +64,7 @@ docker run --rm -v $PWD:/app -w /app golang:1.27-alpine go test ./services/metad
 - При `Cmd+S`: `gofmt` + `goimports` (импорты сортируются), `staticcheck` подсвечивает
 - Рефактор: `F2` (rename), `Cmd+Click` (go to def), `Cmd+.` (fix)
 - Если не форматирует: `Cmd+Shift+P` → `editor: restart language server`, проверь `gopls` установлен (`go install golang.org/x/tools/gopls@latest`)
+
+## Общий Go-модуль pkg (issue #63)
+
+AuthMiddleware/OptionalAuth, RequestLogger, метрики Prometheus, `httputil.WriteJSON` и запуск сервера (таймауты Read/Write/Idle + graceful shutdown по SIGTERM/SIGINT) живут в общем модуле `pkg/` (`flowix/pkg`, подключён через `go.work` и `replace` в `go.mod`). Приватные копии в сервисе удалены — правки общих хелперов делай в `pkg/`, а не в сервисе. Таймауты и грейс shutdown: `pkg/httpserver` (env `SHUTDOWN_GRACE` переопределяет грейс, см. `stop_grace_period` в `deploy/docker-compose.yml`).

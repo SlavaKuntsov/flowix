@@ -109,6 +109,11 @@ if [ -z "$VIDEO_ID" ]; then
   [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] || fail "no access_token in auth response"
   say "   token acquired"
 
+  # regression guard: video list must not 500 (uuid = text in repo List, SQLSTATE 42883)
+  code=$(http_get "$GATEWAY/api/v1/videos?limit=1")
+  [ "$code" = "200" ] || fail "video list failed ($code): $(cat "$TMP/body")"
+  say "   video list 200 ok"
+
   if [ -z "$SAMPLE" ]; then
     need ffmpeg
     SAMPLE="$TMP/sample.mp4"

@@ -1,4 +1,7 @@
+import ipaddress
 import os
+
+from fastapi import Request
 
 from .config import settings
 
@@ -8,11 +11,50 @@ try:
 
     _redis_url = os.getenv("REDIS_URL") or settings.redis_url
 
+    def _parse_cidrs(raw: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+        """Список доверенных прокси из TRUSTED_PROXY_CIDRS (пусто = не доверять никому)."""
+        nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                nets.append(ipaddress.ip_network(part))
+            except ValueError:
+                continue
+        return nets
+
+    _trusted_nets = _parse_cidrs(os.getenv("TRUSTED_PROXY_CIDRS", ""))
+
+    def _client_ip(request: Request) -> str:
+        """Ключ лимитера — реальный IP клиента (issue #52).
+
+        Gateway выставляет проверенный X-Real-IP (затирая клиентские
+        подделки) — ключуем по нему, иначе slowapi видит только IP gateway
+        и один абузер блокирует всех. X-Real-IP доверяем только когда
+        непосредственный пир в TRUSTED_PROXY_CIDRS: при прямом доступе к auth
+        клиент мог подделать заголовок и получить безлимит бакетов (ревью
+        фазы 17, H1). Некорректные значения и чужие пиры — ключ по peer IP.
+        """
+        peer = request.client.host if request.client else ""
+        try:
+            peer_addr = ipaddress.ip_address(peer)
+        except ValueError:
+            return get_remote_address(request)
+        if any(peer_addr in net for net in _trusted_nets):
+            real_ip = request.headers.get("X-Real-IP", "")
+            try:
+                ipaddress.ip_address(real_ip)
+                return real_ip
+            except ValueError:
+                pass
+        return get_remote_address(request)
+
     def _make_limiter(url: str | None):  # type: ignore[no-untyped-def]
         try:
             if url and url.startswith("redis"):
                 # probe redis connectivity — fallback to memory if unreachable
-                lim = Limiter(key_func=get_remote_address, storage_uri=url, default_limits=[])  # type: ignore[no-untyped-call]
+                lim = Limiter(key_func=_client_ip, storage_uri=url, default_limits=[])  # type: ignore[no-untyped-call]
                 # quick storage check: try to get reset without network if possible
                 try:
                     # try a dummy operation; if redis not reachable, this will raise
@@ -28,11 +70,11 @@ try:
                     s.close()
                 except Exception:
                     # redis not reachable — use memory
-                    return Limiter(key_func=get_remote_address, default_limits=[])  # type: ignore[no-untyped-call]
+                    return Limiter(key_func=_client_ip, default_limits=[])  # type: ignore[no-untyped-call]
                 return lim
-            return Limiter(key_func=get_remote_address, default_limits=[])  # type: ignore[no-untyped-call]
+            return Limiter(key_func=_client_ip, default_limits=[])  # type: ignore[no-untyped-call]
         except Exception:
-            return Limiter(key_func=get_remote_address, default_limits=[])  # type: ignore[no-untyped-call]
+            return Limiter(key_func=_client_ip, default_limits=[])  # type: ignore[no-untyped-call]
 
     limiter: Limiter | None = _make_limiter(_redis_url)
 except ImportError:

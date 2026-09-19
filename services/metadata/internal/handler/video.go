@@ -10,8 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	"flowix/metadata/internal/middleware"
 	"flowix/metadata/internal/model"
+
+	pkgmw "flowix/pkg/middleware"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -108,7 +109,7 @@ func (h *VideoHandler) Register(r chi.Router) {
 // @Failure 401 {string} string "unauthorized"
 // @Router /api/v1/videos [post]
 func (h *VideoHandler) Create(w http.ResponseWriter, r *http.Request) {
-	ownerID := middleware.UserIDFromCtx(r.Context())
+	ownerID := pkgmw.UserIDFromCtx(r.Context())
 	var req model.CreateVideoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid body")
@@ -170,7 +171,7 @@ func (h *VideoHandler) getVideo(w http.ResponseWriter, r *http.Request, enforceV
 		writeError(w, r, http.StatusNotFound, "not found")
 		return
 	}
-	if enforceVisibility && v.Visibility == model.VisibilityPrivate && middleware.UserIDFromCtx(r.Context()) != v.OwnerID {
+	if enforceVisibility && v.Visibility == model.VisibilityPrivate && pkgmw.UserIDFromCtx(r.Context()) != v.OwnerID {
 		writeError(w, r, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -250,7 +251,7 @@ func (h *VideoHandler) List(w http.ResponseWriter, r *http.Request) {
 	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
 		offset = v
 	}
-	list, err := h.repo.List(r.Context(), limit, offset, middleware.UserIDFromCtx(r.Context()))
+	list, err := h.repo.List(r.Context(), limit, offset, pkgmw.UserIDFromCtx(r.Context()))
 	if err != nil {
 		slog.Error("list videos failed", "error", err)
 		writeError(w, r, http.StatusInternalServerError, "internal error")
@@ -276,7 +277,7 @@ func (h *VideoHandler) List(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {string} string "not found"
 // @Router /api/v1/videos/{id} [patch]
 func (h *VideoHandler) Update(w http.ResponseWriter, r *http.Request) {
-	ownerID := middleware.UserIDFromCtx(r.Context())
+	ownerID := pkgmw.UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	var req model.UpdateVideoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -314,7 +315,7 @@ func (h *VideoHandler) Update(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {string} string "not found"
 // @Router /api/v1/videos/{id} [delete]
 func (h *VideoHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	ownerID := middleware.UserIDFromCtx(r.Context())
+	ownerID := pkgmw.UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	// fetch first for S3 keys (need renditions + thumbnail before DB delete)
 	var keys []string

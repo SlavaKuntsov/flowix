@@ -38,6 +38,14 @@ uv run --project services/auth pytest -q
 uv run --project services/auth pytest --cov
 ```
 
+## Rate-limit (issue #52)
+`/api/v1/auth/login` — slowapi 5/minute, Redis storage (`REDIS_URL`).
+Ключ лимитера — реальный IP клиента из `X-Real-IP`, который выставляет gateway
+(затирая клиентские подделки). `X-Real-IP` доверяем только когда непосредственный
+пир в `TRUSTED_PROXY_CIDRS` (compose задаёт docker-сеть `172.16.0.0/12`; порт auth
+публикуется только на 127.0.0.1 — ревью фазы 17, H1), иначе ключ по peer IP.
+Без этого один абузер блокировал бы всех (slowapi видел только IP gateway).
+
 ## Zed IDE (при сохранении)
 Настроено в `.zed/settings.json:1`:
 - `Python` → `pyright` + `ruff`, `format_on_save: on`

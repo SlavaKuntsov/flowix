@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	mw "flowix/upload/internal/middleware"
+	mw "flowix/pkg/middleware"
 	"github.com/go-chi/chi/v5"
 )
 

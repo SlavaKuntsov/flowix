@@ -160,8 +160,13 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      # X-Real-IP от gateway (внутри docker-сети) — ключ auth-лимитера по
+      # реальному клиенту; см. services/auth/src/core/limiter.py
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
     ports:
-      - "${AUTH_PORT:-8001}:8001"
+      # ревью фазы 17 (H1): auth не для внешнего доступа — клиенты идут через
+      # gateway (rate-limit + CORS); порт только для localhost (e2e/dev)
+      - "127.0.0.1:${AUTH_PORT:-8001}:8001"
     depends_on:
       postgres:
         condition: service_healthy
@@ -178,7 +183,10 @@ services:
       start_period: 15s
 
   metadata:
-    build: ../services/metadata
+    # issue #63: context = repo root — Dockerfile копирует общий модуль pkg/
+    build:
+      context: ..
+      dockerfile: services/metadata/Dockerfile
     environment:
       DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
       DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
@@ -208,7 +216,11 @@ services:
       start_period: 10s
 
   upload:
-    build: ../services/upload
+    # issue #63: context = repo root; graceful shutdown ждёт in-flight загрузки
+    stop_grace_period: 5m
+    build:
+      context: ..
+      dockerfile: services/upload/Dockerfile
     environment:
       DATABASE_URL: postgres://flowix:flowix@postgres:5432/flowix?sslmode=disable
       RABBITMQ_URL: amqp://flowix:flowix@rabbitmq:5672/
@@ -221,6 +233,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env (see .env.example)}
       UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-5368709120}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      # grace для Shutdown меньше stop_grace_period (issue #63)
+      SHUTDOWN_GRACE: 4m
     ports:
       - "${UPLOAD_PORT:-8003}:8003"
     depends_on:
@@ -275,7 +289,11 @@ services:
       start_period: 20s
 
   gateway:
-    build: ../services/gateway
+    # issue #63: context = repo root; graceful shutdown ждёт in-flight загрузки
+    stop_grace_period: 5m
+    build:
+      context: ..
+      dockerfile: services/gateway/Dockerfile
     environment:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env (see .env.example)}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:?INTERNAL_TOKEN is required — set it in .env (see .env.example)}
@@ -284,6 +302,14 @@ services:
       METADATA_URL: http://metadata:8002
       UPLOAD_URL: http://upload:8003
       VOD_URL: http://nginx-vod:80
+      # grace для Shutdown меньше stop_grace_period (issue #63)
+      SHUTDOWN_GRACE: 4m
+      # issue #52: CORS allowlist, Redis rate-limit. TRUSTED_PROXY_CIDRS пуст —
+      # gateway является edge (LB перед ним нет), клиентский XFF не доверяем.
+      # Если появится LB — указать его CIDR в .env.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     depends_on:
@@ -294,6 +320,8 @@ services:
       upload:
         condition: service_healthy
       nginx-vod:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:

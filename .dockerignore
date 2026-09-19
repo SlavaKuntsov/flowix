@@ -1,0 +1,17 @@
+# Build context для Go-сервисов = корень репо (issue #63: общий модуль pkg/).
+# Оставляем только исходники трёх Go-сервисов и pkg — остальное в контекст
+# не нужно (.git, node_modules, .env и т.д. в образ не должны попадать).
+.git
+.env
+data/
+tmp/
+docs/
+deploy/
+frontend/
+scripts/
+tests/
+services/auth/
+services/transcoder/
+**/__pycache__/
+**/node_modules/
+**/.venv/

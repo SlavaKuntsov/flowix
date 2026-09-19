@@ -15,7 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	mw "flowix/upload/internal/middleware"
+	mw "flowix/pkg/middleware"
 )
 
 // ResumableStorage extends PresignStorage with size and object access.

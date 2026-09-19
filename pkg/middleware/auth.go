@@ -1,4 +1,5 @@
-// Package middleware provides HTTP middleware for gateway authentication.
+// Package middleware provides HTTP middleware shared by the Flowix Go
+// services (issue #63: единая копия вместо дубликата в gateway/metadata/upload).
 package middleware
 
 import (
@@ -14,8 +15,7 @@ type ctxKey string
 const UserIDKey ctxKey = "user_id"
 
 // AuthMiddleware проверяет JWT Bearer и кладёт sub (user_id) в контекст
-// и заголовок X-User-ID для downstream сервисов. Пропускает без токена
-// только если вызывающий явно не требует аутентификации.
+// и заголовок X-User-ID для downstream сервисов.
 func AuthMiddleware(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +60,7 @@ func AuthMiddleware(secret string) func(http.Handler) http.Handler {
 // и кладёт в контекст, если нет — пропускает. Удобно для публичных GET.
 // Невалидный/просроченный токен — тоже анонимный проход (issue #44): публичная
 // лента не должна падать 401, когда фронт прислал истёкший access-токен.
+// Клиентский X-User-ID недоверенный — убираем, ставим только после валидации JWT.
 func OptionalAuth(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +98,7 @@ func OptionalAuth(secret string) func(http.Handler) http.Handler {
 	}
 }
 
+// UserIDFromCtx возвращает sub из контекста (пустую строку для анонимов).
 func UserIDFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(UserIDKey).(string)
 	return v

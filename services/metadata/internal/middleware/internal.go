@@ -1,3 +1,4 @@
+// Package middleware provides metadata-specific middleware (internal token auth).
 package middleware
 
 import (
