@@ -907,9 +907,13 @@ class _HeartbeatKeeper:
     BlockingConnection only processes heartbeat frames inside
     process_data_events(); a transcode blocks that loop for minutes, so the
     broker closes the connection (600s heartbeat vs 900s x 3 ffmpeg runs).
-    A daemon thread pokes the connection every `interval` seconds. All pika
-    calls in handle_message happen outside the context manager, so the main
-    thread and the keeper never drive the connection at the same time.
+    A daemon thread pokes the connection every `interval` seconds.
+
+    Pika calls in handle_message are allowed only after `quiesced` is True
+    (ревью фазы 17, M2): __exit__ ждёт остановки потока; если поток застрял
+    внутри process_data_events, ack/publish откладывать нельзя —
+    BlockingConnection не потокобезопасен, и сообщение будет доставлено
+    повторно после потери соединения.
     """
 
     def __init__(self, connection: Any, interval: float = 30.0):
@@ -917,6 +921,7 @@ class _HeartbeatKeeper:
         self._interval = interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self.quiesced = False
 
     def __enter__(self) -> "_HeartbeatKeeper":
         self._thread = threading.Thread(target=self._run, daemon=True, name="pika-heartbeat")
@@ -940,6 +945,11 @@ class _HeartbeatKeeper:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2)
+            self.quiesced = not self._thread.is_alive()
+        else:
+            self.quiesced = True
+        if not self.quiesced:
+            log.error("heartbeat thread did not stop in time — pika calls are unsafe")
 
 
 def handle_message(ch, method, properties, body):
@@ -962,8 +972,14 @@ def handle_message(ch, method, properties, body):
         # issue #51: process_message blocks the pika dispatch loop for minutes
         # (ffmpeg 900s x 3) — poke the connection from a daemon thread so the
         # broker does not close it on heartbeat timeout.
-        with _HeartbeatKeeper(ch.connection):
+        keeper = _HeartbeatKeeper(ch.connection)
+        with keeper:
             process_message(body)
+        if not keeper.quiesced:
+            # ревью фазы 17 (M2): поток ещё гоняет process_data_events — любые
+            # pika-вызовы небезопасны; не ackаем, брокер доставит повторно
+            log.error("heartbeat keeper not quiesced — skipping ack, message will be redelivered")
+            return
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as e:
         log.exception("process failed: %s", e)

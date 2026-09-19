@@ -385,6 +385,34 @@ def test_handle_message_acks_after_success():
         ch.basic_nack.assert_not_called()
 
 
+def test_handle_message_skips_ack_when_keeper_not_quiesced():
+    # ревью фазы 17 (M2): пока heartbeat-поток не остановлен, pika-вызовы
+    # небезопасны (BlockingConnection не потокобезопасен) — ack пропускаем,
+    # брокер доставит сообщение повторно после потери соединения
+    ch, method = _handle_message_channel()
+    body = json.dumps({"video_id": "vid-1", "s3_key": "raw/vid-1/original.mp4"}).encode()
+
+    class StuckKeeper:
+        def __init__(self, connection):
+            self.quiesced = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+    with (
+        patch("app.consumer.process_message") as mock_proc,
+        patch("app.consumer._HeartbeatKeeper", StuckKeeper),
+    ):
+        cons.handle_message(ch, method, MagicMock(headers={}), body)
+    mock_proc.assert_called_once_with(body)
+    ch.basic_ack.assert_not_called()
+    ch.basic_publish.assert_not_called()
+    ch.basic_nack.assert_not_called()
+
+
 def test_handle_message_metadata_failure_retries_and_does_not_ack_silently():
     # issue #50 verify: metadata update failed -> retry-queue republish, not a plain ack
     ch, method = _handle_message_channel()
