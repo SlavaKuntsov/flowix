@@ -68,7 +68,7 @@ func (h *PresignHandler) Presign(w http.ResponseWriter, r *http.Request) {
 	}
 	var req presignRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid body"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "invalid body", nil)
 		return
 	}
 	title := strings.TrimSpace(req.Title)
@@ -80,13 +80,13 @@ func (h *PresignHandler) Presign(w http.ResponseWriter, r *http.Request) {
 	}
 	ct := strings.TrimSpace(req.ContentType)
 	if ct != "" && !isAllowedContentType(ct) {
-		http.Error(w, `{"error":"unsupported content type: `+ct+`"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "unsupported content type: "+ct, nil)
 		return
 	}
 	// create metadata first
 	videoID, err := h.metadata.CreateVideo(token, title, req.Description)
 	if err != nil {
-		http.Error(w, `{"error":"metadata: `+err.Error()+`"}`, http.StatusBadGateway)
+		writeError(w, r, http.StatusBadGateway, "metadata unavailable", err)
 		return
 	}
 	_ = ownerID // owner stored in metadata via token
@@ -100,12 +100,10 @@ func (h *PresignHandler) Presign(w http.ResponseWriter, r *http.Request) {
 	expires := time.Hour
 	urlStr, err := h.storage.PresignedPutObjectExternal(r.Context(), s3Key, expires, publicEndpoint)
 	if err != nil {
-		http.Error(w, `{"error":"presign: `+err.Error()+`"}`, 500)
+		writeError(w, r, http.StatusInternalServerError, "presign failed", err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(201)
-	_ = json.NewEncoder(w).Encode(presignResponse{
+	writeJSON(w, r, http.StatusCreated, presignResponse{
 		ID:        videoID,
 		VideoID:   videoID,
 		S3Key:     s3Key,
@@ -138,36 +136,35 @@ func (h *PresignHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if videoID == "" {
-		http.Error(w, `{"error":"video_id required"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "video_id required", nil)
 		return
 	}
 	// IDOR (issue #46): only the owner may complete an upload for a video id.
-	if !requireOwnership(h.owner, videoID, ownerID, w) {
+	if !requireOwnership(h.owner, videoID, ownerID, w, r) {
 		return
 	}
 	s3Key := fmt.Sprintf("raw/%s/original.mp4", videoID)
 	// Verify the uploaded object matches a real video PUT (issue #46).
 	size, contentType, err := h.storage.StatObjectInfo(r.Context(), s3Key)
 	if err != nil {
-		http.Error(w, `{"error":"object not found, upload via presigned URL first"}`, 404)
+		writeError(w, r, http.StatusNotFound, "object not found, upload via presigned URL first", nil)
 		return
 	}
 	if size == 0 {
-		http.Error(w, `{"error":"empty object"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "empty object", nil)
 		return
 	}
 	if contentType != "" && !strings.HasPrefix(contentType, "video/") {
-		http.Error(w, `{"error":"unexpected content type: `+contentType+`"}`, 400)
+		writeError(w, r, http.StatusBadRequest, "unexpected content type: "+contentType, nil)
 		return
 	}
 	metrics.UploadBytes.Inc()
 	ev := VideoUploadedEvent{VideoID: videoID, S3Key: s3Key, OwnerID: ownerID}
 	if err := h.publisher.Publish(r.Context(), ev); err != nil {
-		http.Error(w, `{"error":"queue: `+err.Error()+`"}`, 500)
+		writeError(w, r, http.StatusInternalServerError, "queue error", err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, r, http.StatusOK, map[string]interface{}{
 		"id":     videoID,
 		"s3_key": s3Key,
 		"status": "uploaded",

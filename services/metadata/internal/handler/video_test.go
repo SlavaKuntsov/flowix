@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"flowix/metadata/internal/model"
+	"flowix/metadata/internal/repository"
 
 	pkgmw "flowix/pkg/middleware"
 
@@ -36,15 +38,23 @@ type fakeStore struct {
 
 func newFake() *fakeStore { return &fakeStore{videos: map[string]*model.Video{}} }
 
-func (f *fakeStore) Create(_ context.Context, ownerID, title, description string) (*model.Video, error) {
-	v := &model.Video{ID: "vid-" + title, OwnerID: ownerID, Title: title, Description: description, Status: model.StatusUploaded, Visibility: model.VisibilityPublic}
+func (f *fakeStore) Create(_ context.Context, ownerID, title, description string, visibility *model.Visibility) (*model.Video, error) {
+	// mirror repo.Create (issue #58): validate visibility BEFORE insert
+	if visibility != nil && !visibility.Valid() {
+		return nil, repository.ErrInvalidVisibility
+	}
+	vis := model.VisibilityPublic
+	if visibility != nil {
+		vis = *visibility
+	}
+	v := &model.Video{ID: "vid-" + title, OwnerID: ownerID, Title: title, Description: description, Status: model.StatusUploaded, Visibility: vis}
 	f.videos[v.ID] = v
 	return v, nil
 }
 func (f *fakeStore) GetByID(_ context.Context, id string) (*model.Video, error) {
 	v, ok := f.videos[id]
 	if !ok {
-		return nil, errNotFound()
+		return nil, repository.ErrNotFound
 	}
 	return v, nil
 }
@@ -74,10 +84,10 @@ func (f *fakeStore) List(_ context.Context, limit, offset int, viewerID string) 
 func (f *fakeStore) Update(_ context.Context, id, ownerID string, req model.UpdateVideoRequest) (*model.Video, error) {
 	v, ok := f.videos[id]
 	if !ok {
-		return nil, errNotFound()
+		return nil, repository.ErrNotFound
 	}
 	if v.OwnerID != ownerID {
-		return nil, errForbidden()
+		return nil, repository.ErrForbidden
 	}
 	if req.Title != nil {
 		v.Title = *req.Title
@@ -87,7 +97,7 @@ func (f *fakeStore) Update(_ context.Context, id, ownerID string, req model.Upda
 	}
 	if req.Visibility != nil {
 		if !req.Visibility.Valid() {
-			return nil, &fakeErr{"invalid visibility"}
+			return nil, repository.ErrInvalidVisibility
 		}
 		v.Visibility = *req.Visibility
 	}
@@ -96,10 +106,10 @@ func (f *fakeStore) Update(_ context.Context, id, ownerID string, req model.Upda
 func (f *fakeStore) Delete(_ context.Context, id, ownerID string) error {
 	v, ok := f.videos[id]
 	if !ok {
-		return errNotFound()
+		return repository.ErrNotFound
 	}
 	if v.OwnerID != ownerID {
-		return errForbidden()
+		return repository.ErrForbidden
 	}
 	delete(f.videos, id)
 	return nil
@@ -107,7 +117,7 @@ func (f *fakeStore) Delete(_ context.Context, id, ownerID string) error {
 func (f *fakeStore) UpdateStatus(_ context.Context, id string, status model.VideoStatus, renditions []model.Rendition) error {
 	v, ok := f.videos[id]
 	if !ok {
-		return errNotFound()
+		return repository.ErrNotFound
 	}
 	// idempotency: don't downgrade ready → processing/uploaded
 	if v.Status == model.StatusReady && (status == model.StatusProcessing || status == model.StatusUploaded) {
@@ -122,7 +132,7 @@ func (f *fakeStore) UpdateStatus(_ context.Context, id string, status model.Vide
 func (f *fakeStore) UpdateThumbnail(_ context.Context, id string, thumbnailS3Key string) error {
 	v, ok := f.videos[id]
 	if !ok {
-		return errNotFound()
+		return repository.ErrNotFound
 	}
 	v.ThumbnailS3Key = &thumbnailS3Key
 	u := "/thumbnails/" + id + "/thumb.jpg"
@@ -130,12 +140,24 @@ func (f *fakeStore) UpdateThumbnail(_ context.Context, id string, thumbnailS3Key
 	return nil
 }
 
-func errNotFound() error  { return &fakeErr{"not found"} }
-func errForbidden() error { return &fakeErr{"forbidden"} }
+// Issue #58: wrappers that simulate a failing DB for handler 500-mapping tests.
+type failingGetStore struct {
+	*fakeStore
+	getErr error
+}
 
-type fakeErr struct{ s string }
+func (f *failingGetStore) GetByID(_ context.Context, _ string) (*model.Video, error) {
+	return nil, f.getErr
+}
 
-func (e *fakeErr) Error() string { return e.s }
+type failingUpdateStore struct {
+	*fakeStore
+	updateErr error
+}
+
+func (f *failingUpdateStore) Update(_ context.Context, _ string, _ string, _ model.UpdateVideoRequest) (*model.Video, error) {
+	return nil, f.updateErr
+}
 
 // helper to build router with auth where needed
 func testRouter(store VideoStore) chi.Router {
@@ -221,6 +243,69 @@ func TestCreateNoAuth(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != 401 {
 		t.Fatalf("want 401 got %d", w.Code)
+	}
+}
+
+// Issue #58: невалидная visibility → 400, записи в БД нет (валидация до вставки).
+func TestCreateInvalidVisibilityNoWrite(t *testing.T) {
+	store := newFake()
+	r := testRouter(store)
+	body, _ := json.Marshal(map[string]string{"title": "x", "visibility": "bogus"})
+	req := httptest.NewRequest("POST", "/api/v1/videos", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+signToken("owner1"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("want 400 got %d %s", w.Code, w.Body.String())
+	}
+	if len(store.videos) != 0 {
+		t.Fatalf("invalid visibility must not create a row, got %d", len(store.videos))
+	}
+}
+
+// Issue #58: visibility сохраняется одним INSERT'ом при создании (без UPDATE-довески).
+func TestCreateWithVisibility(t *testing.T) {
+	store := newFake()
+	r := testRouter(store)
+	body, _ := json.Marshal(map[string]string{"title": "vis", "visibility": "private"})
+	req := httptest.NewRequest("POST", "/api/v1/videos", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+signToken("owner1"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 201 {
+		t.Fatalf("want 201 got %d %s", w.Code, w.Body.String())
+	}
+	if v := store.videos["vid-vis"]; v == nil || v.Visibility != model.VisibilityPrivate {
+		t.Fatalf("visibility private expected, got %+v", store.videos["vid-vis"])
+	}
+}
+
+// Issue #58: ошибка БД при Update → 500, а не 404.
+func TestUpdateDBErrorIs500(t *testing.T) {
+	store := &failingUpdateStore{fakeStore: newFake(), updateErr: errors.New("db down")}
+	r := testRouter(store)
+	body, _ := json.Marshal(map[string]string{"title": "new"})
+	req := httptest.NewRequest("PATCH", "/api/v1/videos/vid-1", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+signToken("owner1"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 500 {
+		t.Fatalf("want 500 got %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Issue #58: ошибка БД при Get → 500, а не 404.
+func TestGetDBErrorIs500(t *testing.T) {
+	store := &failingGetStore{fakeStore: newFake(), getErr: errors.New("db down")}
+	r := testRouter(store)
+	req := httptest.NewRequest("GET", "/api/v1/videos/vid-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 500 {
+		t.Fatalf("want 500 got %d %s", w.Code, w.Body.String())
 	}
 }
 

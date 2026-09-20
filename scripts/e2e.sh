@@ -6,7 +6,9 @@
 #   Phase-5 only:            VIDEO_ID=<id> ./scripts/e2e.sh   # skip upload, assert HLS for a ready video.
 #
 # Endpoints (override via env):
-#   AUTH, UPLOAD, METADATA, GATEWAY
+#   GATEWAY (and optionally AUTH/UPLOAD/METADATA for non-default deployments).
+#   issue #55: app ports 8001-8003 are not published — auth/upload/metadata calls
+#   default to the gateway, which proxies /api/v1/* to the internal services.
 #   HLS assertions go through the gateway (:8080) — since issue #43 nginx-vod :8081
 #   is not published; the gateway /hls/* proxy (HLSAuth) is the only playback path.
 #
@@ -15,10 +17,10 @@
 #   GATEWAY=http://localhost:8080 bash scripts/e2e.sh
 set -euo pipefail
 
-AUTH=${AUTH:-http://localhost:8001}
-UPLOAD=${UPLOAD:-http://localhost:8003}
-METADATA=${METADATA:-http://localhost:8002}
 GATEWAY=${GATEWAY:-http://localhost:8080}
+AUTH=${AUTH:-$GATEWAY}
+UPLOAD=${UPLOAD:-$GATEWAY}
+METADATA=${METADATA:-$GATEWAY}
 # VOD legacy override kept for back-compat; default = gateway (nginx-vod is internal now)
 VOD=${VOD:-$GATEWAY}
 
@@ -77,14 +79,7 @@ say "endpoints: auth=$AUTH upload=$UPLOAD metadata=$METADATA gateway=$GATEWAY"
 # ── 1. health ─────────────────────────────────────────────────────────────
 say "1) health"
 [ "$(http_get "$GATEWAY/health")" = "200" ] || fail "gateway not healthy at $GATEWAY/health"
-say "   gateway: ok"
-if [ -z "$VIDEO_ID" ]; then
-  for pair in "auth:$AUTH" "upload:$UPLOAD" "metadata:$METADATA"; do
-    name=${pair%%:*}; url=${pair#*:}
-    [ "$(http_get "$url/health")" = "200" ] || fail "$name not healthy at $url/health"
-    say "   $name: ok"
-  done
-fi
+say "   gateway: ok (auth/upload/metadata behind gateway, issue #55)"
 
 # ── 2. auth + upload (skipped when VIDEO_ID is provided) ───────────────────
 if [ -z "$VIDEO_ID" ]; then

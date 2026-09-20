@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"flowix/metadata/internal/model"
+	"flowix/metadata/internal/repository"
 
 	pkgmw "flowix/pkg/middleware"
 
@@ -19,7 +21,7 @@ import (
 
 // VideoStore abstracts persistence — allows in-memory fake for tests (T2 stepwise).
 type VideoStore interface {
-	Create(ctx context.Context, ownerID, title, description string) (*model.Video, error)
+	Create(ctx context.Context, ownerID, title, description string, visibility *model.Visibility) (*model.Video, error)
 	GetByID(ctx context.Context, id string) (*model.Video, error)
 	List(ctx context.Context, limit, offset int, viewerID string) ([]model.Video, error)
 	Update(ctx context.Context, id, ownerID string, req model.UpdateVideoRequest) (*model.Video, error)
@@ -119,20 +121,21 @@ func (h *VideoHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "title required")
 		return
 	}
-	v, err := h.repo.Create(r.Context(), ownerID, req.Title, req.Description)
-	if err != nil {
-		slog.Error("create video failed", "error", err, "owner_id", ownerID)
-		writeError(w, r, http.StatusInternalServerError, "internal error")
+	// issue #58: visibility валидируется ДО вставки — невалидное значение не создаёт строку
+	if req.Visibility != nil && !req.Visibility.Valid() {
+		writeError(w, r, http.StatusBadRequest, "invalid visibility")
 		return
 	}
-	if req.Visibility != nil {
-		if !req.Visibility.Valid() {
+	v, err := h.repo.Create(r.Context(), ownerID, req.Title, req.Description, req.Visibility)
+	if err != nil {
+		// защита на уровне репозитория (проверка до INSERT) — тоже 400
+		if errors.Is(err, repository.ErrInvalidVisibility) {
 			writeError(w, r, http.StatusBadRequest, "invalid visibility")
 			return
 		}
-		if upd, err := h.repo.Update(r.Context(), v.ID, ownerID, model.UpdateVideoRequest{Visibility: req.Visibility}); err == nil {
-			v = upd
-		}
+		slog.Error("create video failed", "error", err, "owner_id", ownerID)
+		writeError(w, r, http.StatusInternalServerError, "internal error")
+		return
 	}
 	h.presignThumbnail(r.Context(), v)
 	writeJSON(w, r, http.StatusCreated, v)
@@ -168,7 +171,13 @@ func (h *VideoHandler) getVideo(w http.ResponseWriter, r *http.Request, enforceV
 	id := chi.URLParam(r, "id")
 	v, err := h.repo.GetByID(r.Context(), id)
 	if err != nil {
-		writeError(w, r, http.StatusNotFound, "not found")
+		// issue #58: только отсутствие записи — 404; ошибка БД — 500
+		if errors.Is(err, repository.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "not found")
+			return
+		}
+		slog.Error("get video failed", "error", err, "video_id", id)
+		writeError(w, r, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if enforceVisibility && v.Visibility == model.VisibilityPrivate && pkgmw.UserIDFromCtx(r.Context()) != v.OwnerID {
@@ -196,7 +205,17 @@ type vodClip struct {
 // Phase 12: adaptive ladder — accept 1..3 renditions (not fixed 3).
 func (h *VideoHandler) GetVODMapping(w http.ResponseWriter, r *http.Request) {
 	v, err := h.repo.GetByID(r.Context(), chi.URLParam(r, "id"))
-	if err != nil || v.Status != model.StatusReady || len(v.Renditions) == 0 {
+	if err != nil {
+		// issue #58: ошибка БД — 500, отсутствие записи — 404
+		if errors.Is(err, repository.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "video not ready")
+			return
+		}
+		slog.Error("vod mapping get failed", "error", err)
+		writeError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if v.Status != model.StatusReady || len(v.Renditions) == 0 {
 		writeError(w, r, http.StatusNotFound, "video not ready")
 		return
 	}
@@ -290,15 +309,18 @@ func (h *VideoHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	v, err := h.repo.Update(r.Context(), id, ownerID, req)
 	if err != nil {
-		if err.Error() == "forbidden" {
+		// issue #58: sentinel-ошибки через errors.Is; прочие ошибки БД — 500, не 404
+		switch {
+		case errors.Is(err, repository.ErrForbidden):
 			writeError(w, r, http.StatusForbidden, "forbidden")
-			return
-		}
-		if err.Error() == "invalid visibility" {
+		case errors.Is(err, repository.ErrInvalidVisibility):
 			writeError(w, r, http.StatusBadRequest, "invalid visibility")
-			return
+		case errors.Is(err, repository.ErrNotFound):
+			writeError(w, r, http.StatusNotFound, "not found")
+		default:
+			slog.Error("update video failed", "error", err, "video_id", id)
+			writeError(w, r, http.StatusInternalServerError, "internal error")
 		}
-		writeError(w, r, http.StatusNotFound, "not found")
 		return
 	}
 	h.presignThumbnail(r.Context(), v)
@@ -335,11 +357,16 @@ func (h *VideoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := h.repo.Delete(r.Context(), id, ownerID); err != nil {
-		if err.Error() == "forbidden" {
+		// issue #58: sentinel-ошибки через errors.Is; прочие ошибки БД — 500, не 404
+		switch {
+		case errors.Is(err, repository.ErrForbidden):
 			writeError(w, r, http.StatusForbidden, "forbidden")
-			return
+		case errors.Is(err, repository.ErrNotFound):
+			writeError(w, r, http.StatusNotFound, "not found")
+		default:
+			slog.Error("delete video failed", "error", err, "video_id", id)
+			writeError(w, r, http.StatusInternalServerError, "internal error")
 		}
-		writeError(w, r, http.StatusNotFound, "not found")
 		return
 	}
 	if h.storage != nil {

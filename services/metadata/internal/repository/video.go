@@ -3,10 +3,12 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"flowix/metadata/internal/model"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,17 +18,27 @@ type VideoRepo struct {
 
 func NewVideoRepo(pool *pgxpool.Pool) *VideoRepo { return &VideoRepo{pool: pool} }
 
-func (r *VideoRepo) Create(ctx context.Context, ownerID, title, description string) (*model.Video, error) {
+// Sentinel errors — handler маппит их на HTTP-статусы через errors.Is (issue #58):
+// любые прочие ошибки считаются ошибками БД и отдаются как 500.
+var (
+	ErrNotFound          = errors.New("video not found")
+	ErrForbidden         = errors.New("forbidden")
+	ErrInvalidVisibility = errors.New("invalid visibility")
+)
+
+func (r *VideoRepo) Create(ctx context.Context, ownerID, title, description string, visibility *model.Visibility) (*model.Video, error) {
+	// issue #58: visibility валидируется ДО вставки — невалидное значение не создаёт
+	// строку; значение передаётся одним INSERT'ом (без последующего UPDATE)
+	if visibility != nil && !visibility.Valid() {
+		return nil, ErrInvalidVisibility
+	}
 	id := uuid.New().String()
-	vis := model.VisibilityPublic
-	q := `INSERT INTO videos (id, owner_id, title, description, status, visibility) VALUES ($1,$2,$3,$4,'uploaded',$5) RETURNING id, owner_id, title, description, duration, status, visibility, thumbnail_s3_key, created_at, updated_at`
+	q := `INSERT INTO videos (id, owner_id, title, description, status, visibility) VALUES ($1,$2,$3,$4,'uploaded',COALESCE($5::video_visibility,'public')) RETURNING id, owner_id, title, description, duration, status, visibility::text, thumbnail_s3_key, created_at, updated_at`
 	v := &model.Video{}
-	err := r.pool.QueryRow(ctx, q, id, ownerID, title, description, vis).Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.Visibility, &v.ThumbnailS3Key, &v.CreatedAt, &v.UpdatedAt)
+	err := r.pool.QueryRow(ctx, q, id, ownerID, title, description, visibility).Scan(&v.ID, &v.OwnerID, &v.Title, &v.Description, &v.Duration, &v.Status, &v.Visibility, &v.ThumbnailS3Key, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create video: %w", err)
 	}
-	// fetch owner_email for response (best-effort)
-	_ = r.pool.QueryRow(ctx, `SELECT email FROM users WHERE id=$1`, ownerID).Scan(&v.OwnerEmail)
 	if v.ThumbnailS3Key != nil {
 		u := "/thumbnails/" + v.ID + "/thumb.jpg"
 		v.ThumbnailURL = &u
@@ -39,6 +51,9 @@ func (r *VideoRepo) GetByID(ctx context.Context, id string) (*model.Video, error
 	v := &model.Video{}
 	err := r.pool.QueryRow(ctx, q, id).Scan(&v.ID, &v.OwnerID, &v.OwnerEmail, &v.Title, &v.Description, &v.Duration, &v.Status, &v.Visibility, &v.ThumbnailS3Key, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	if v.ThumbnailS3Key != nil {
@@ -87,36 +102,38 @@ func (r *VideoRepo) List(ctx context.Context, limit, offset int, viewerID string
 }
 
 func (r *VideoRepo) Update(ctx context.Context, id, ownerID string, req model.UpdateVideoRequest) (*model.Video, error) {
-	// only owner can update
-	v, err := r.GetByID(ctx, id)
+	// issue #57: один атомарный UPDATE вместо read-check-write (TOCTOU) и 3 отдельных
+	// UPDATE. owner в WHERE закрывает forbidden-проверку, COALESCE не трогает поля,
+	// не переданные в запросе — конкурентные PATCH не затирают изменения друг друга.
+	// Email берётся подзапросом в RETURNING, чтобы остаться в одном запросе.
+	if req.Visibility != nil && !req.Visibility.Valid() {
+		return nil, ErrInvalidVisibility
+	}
+	q := `UPDATE videos v SET title=COALESCE($1, v.title), description=COALESCE($2, v.description), visibility=COALESCE($3::video_visibility, v.visibility) WHERE v.id=$4 AND v.owner_id=$5 RETURNING v.id, v.owner_id, (SELECT email FROM users WHERE id=v.owner_id), v.title, v.description, v.duration, v.status, v.visibility::text, v.thumbnail_s3_key, v.created_at, v.updated_at`
+	v := &model.Video{}
+	err := r.pool.QueryRow(ctx, q, req.Title, req.Description, req.Visibility, id, ownerID).Scan(&v.ID, &v.OwnerID, &v.OwnerEmail, &v.Title, &v.Description, &v.Duration, &v.Status, &v.Visibility, &v.ThumbnailS3Key, &v.CreatedAt, &v.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// no-row в WHERE неразличим: чужое видео или не существует — классифицируем
+		// отдельным чтением, чтобы сохранить контракт ответов 403/404
+		var exists bool
+		e := r.pool.QueryRow(ctx, `SELECT true FROM videos WHERE id=$1`, id).Scan(&exists)
+		if e == nil {
+			return nil, ErrForbidden
+		}
+		if !errors.Is(e, pgx.ErrNoRows) {
+			// transient DB error при классификации не маскируем в 404
+			return nil, e
+		}
+		return nil, ErrNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
-	if v.OwnerID != ownerID {
-		return nil, fmt.Errorf("forbidden")
+	if v.ThumbnailS3Key != nil {
+		u := "/thumbnails/" + v.ID + "/thumb.jpg"
+		v.ThumbnailURL = &u
 	}
-	if req.Title != nil {
-		_, err = r.pool.Exec(ctx, `UPDATE videos SET title=$1 WHERE id=$2`, *req.Title, id)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if req.Description != nil {
-		_, err = r.pool.Exec(ctx, `UPDATE videos SET description=$1 WHERE id=$2`, *req.Description, id)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if req.Visibility != nil {
-		if !req.Visibility.Valid() {
-			return nil, fmt.Errorf("invalid visibility")
-		}
-		_, err = r.pool.Exec(ctx, `UPDATE videos SET visibility=$1 WHERE id=$2`, *req.Visibility, id)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return r.GetByID(ctx, id)
+	return v, nil
 }
 
 func (r *VideoRepo) Delete(ctx context.Context, id, ownerID string) error {
@@ -125,7 +142,7 @@ func (r *VideoRepo) Delete(ctx context.Context, id, ownerID string) error {
 		return err
 	}
 	if v.OwnerID != ownerID {
-		return fmt.Errorf("forbidden")
+		return ErrForbidden
 	}
 	_, err = r.pool.Exec(ctx, `DELETE FROM videos WHERE id=$1`, id)
 	return err
