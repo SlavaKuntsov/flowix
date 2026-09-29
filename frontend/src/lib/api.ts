@@ -74,12 +74,59 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// issue #60: silent refresh on 401 — single-flight, параллельные 401-запросы
+// ждут один refresh и ретраятся с новым токеном.
+const AUTH_PATHS = ["/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/refresh"];
+
+let refreshPromise: Promise<boolean> | null = null;
+
+async function refreshAccessToken(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  const refreshToken = localStorage.getItem("refresh_token");
+  if (!refreshToken) return false;
+  const res = await fetch(`${base()}/api/v1/auth/refresh`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${refreshToken}` },
+  });
+  if (!res.ok) return false;
+  const data = (await res.json()) as { access_token: string; refresh_token: string };
+  localStorage.setItem("access_token", data.access_token);
+  localStorage.setItem("refresh_token", data.refresh_token);
+  const { useAuth } = await import("@/store/auth");
+  useAuth.setState({ token: data.access_token });
+  return true;
+}
+
+function tryRefresh(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = refreshAccessToken().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
+async function handleRefreshFailure(): Promise<void> {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("access_token");
+  localStorage.removeItem("refresh_token");
+  const { useAuth } = await import("@/store/auth");
+  useAuth.setState({ token: null, email: null, userId: null });
+}
+
+async function request<T>(path: string, init?: RequestInit, retried = false): Promise<T> {
   const url = `${base()}${path}`;
   const res = await fetch(url, {
     ...init,
     headers: { ...(init?.headers as Record<string, string>), ...authHeaders() },
   });
+  if (res.status === 401 && !retried && !AUTH_PATHS.some((p) => path.startsWith(p))) {
+    if (await tryRefresh()) {
+      // authHeaders() прочитает уже обновлённый access_token из localStorage
+      return request<T>(path, init, true);
+    }
+    await handleRefreshFailure();
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let msg = text;
