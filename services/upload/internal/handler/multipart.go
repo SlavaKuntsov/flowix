@@ -34,6 +34,9 @@ type MultipartStorage interface {
 	ListParts(ctx context.Context, key, uploadID string) ([]storage.MultipartPart, error)
 	CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []storage.MultipartPart) (int64, error)
 	PresignPart(ctx context.Context, key, uploadID string, partNumber int, expires time.Duration, publicEndpoint string) (string, error)
+	// StatObjectInfo verifies the assembled object (MinIO не отдаёт размер
+	// в CompleteMultipartUpload — parity с presign-Complete, issue #46).
+	StatObjectInfo(ctx context.Context, key string) (int64, string, error)
 }
 
 type MultipartHandler struct {
@@ -256,6 +259,20 @@ func (h *MultipartHandler) Complete(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := h.storage.CompleteMultipartUpload(r.Context(), key, uploadID, parts); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "complete multipart upload failed", err)
+		return
+	}
+	// паритет с presign-Complete (issue #46): пустой или не-video объект не принимаем
+	size, contentType, err := h.storage.StatObjectInfo(r.Context(), key)
+	if err != nil {
+		writeError(w, r, http.StatusNotFound, "assembled object not found", err)
+		return
+	}
+	if size == 0 {
+		writeError(w, r, http.StatusBadRequest, "empty object", nil)
+		return
+	}
+	if contentType != "" && !strings.HasPrefix(contentType, "video/") {
+		writeError(w, r, http.StatusBadRequest, "unexpected content type: "+contentType, nil)
 		return
 	}
 	metrics.UploadBytes.Inc()

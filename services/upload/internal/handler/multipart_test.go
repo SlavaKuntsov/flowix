@@ -29,6 +29,8 @@ type fakeMultipartStorage struct {
 	listErr      error
 	completeErr  error
 	completeSize int64
+	statCT       string
+	statErr      error
 	presignedNum int
 	presignedKey string
 	presignErr   error
@@ -71,6 +73,16 @@ func (f *fakeMultipartStorage) CompleteMultipartUpload(_ context.Context, _, _ s
 		return 0, errors.New("no parts")
 	}
 	return f.completeSize, nil
+}
+
+func (f *fakeMultipartStorage) StatObjectInfo(_ context.Context, _ string) (int64, string, error) {
+	if f.statErr != nil {
+		return 0, "", f.statErr
+	}
+	if f.completeSize == 0 {
+		return 12 << 20, "video/mp4", nil
+	}
+	return f.completeSize, f.statCT, nil
 }
 
 func (f *fakeMultipartStorage) PresignPart(_ context.Context, key, _ string, partNumber int, _ time.Duration, _ string) (string, error) {

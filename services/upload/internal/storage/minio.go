@@ -192,21 +192,31 @@ func (m *MinioClient) CreateMultipartUpload(ctx context.Context, key, contentTyp
 	return uploadID, nil
 }
 
-// FindUploadID returns the in-progress multipart upload for key, or an
+// FindUploadID returns the latest in-progress multipart upload for key, or an
 // error mentioning "not found" when none exists — the client never tracks
-// upload_id, resume works from server-side state (issue #56).
+// upload_id, resume works from server-side state (issue #56). The latest
+// session wins: a retried Create must not bind resume/complete to a stale one.
 func (m *MinioClient) FindUploadID(ctx context.Context, key string) (string, error) {
 	core := minio.Core{Client: m.client}
 	res, err := core.ListMultipartUploads(ctx, m.bucket, key, "", "", "", 1000)
 	if err != nil {
 		return "", fmt.Errorf("list multipart uploads %s: %w", key, err)
 	}
+	var latest string
+	var initiated time.Time
 	for _, u := range res.Uploads {
-		if u.Key == key {
-			return u.UploadID, nil
+		if u.Key != key {
+			continue
+		}
+		if latest == "" || u.Initiated.After(initiated) {
+			latest = u.UploadID
+			initiated = u.Initiated
 		}
 	}
-	return "", fmt.Errorf("multipart upload not found for %s", key)
+	if latest == "" {
+		return "", fmt.Errorf("multipart upload not found for %s", key)
+	}
+	return latest, nil
 }
 
 // ListParts returns uploaded parts ordered by part number.
