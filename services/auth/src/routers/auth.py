@@ -109,6 +109,9 @@ async def me(token: str = Depends(_get_token), db: AsyncSession = Depends(get_db
         payload = decode_token(token)
     except ValueError:
         raise HTTPException(401, "invalid token")
+    if payload.get("type") != "access":
+        # issue #76: refresh-токен — не identity, как в Go-мидлварях (#53)
+        raise HTTPException(401, "not an access token")
     user_id = payload["sub"]
     # user_id is str from JWT; compare as UUID
     import uuid
