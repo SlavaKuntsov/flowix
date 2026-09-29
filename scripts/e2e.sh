@@ -338,22 +338,28 @@ if [ -z "${MULTIPART_SKIP:-}" ]; then
   if [ -n "${TOKEN:-}" ]; then
     MP_TITLE="e2e-multipart-$(date +%s)"
     say "   multipart create $MP_TITLE"
-    MP_SAMPLE="${MP_SAMPLE:-$SAMPLE}"
-    if [ -z "$MP_SAMPLE" ] || [ ! -f "$MP_SAMPLE" ]; then
+    MP_SAMPLE="${MP_SAMPLE:-}"
+    # S3: все части кроме последней ≥5MB (EntityTooSmall иначе). Режем на
+    # 5MiB + остаток — последняя часть исключена из минимума.
+    if [ -z "$MP_SAMPLE" ] || [ ! -f "$MP_SAMPLE" ] || [ "$(stat -f%z "$MP_SAMPLE" 2>/dev/null || stat -c%s "$MP_SAMPLE")" -lt $(( 6 * 1024 * 1024 )) ]; then
       MP_SAMPLE="$TMP/multipart-sample.mp4"
-      ffmpeg -y -loglevel error -f lavfi -i "testsrc=size=640x360:rate=30:duration=3" -f lavfi -i "sine=frequency=440:duration=3" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "$MP_SAMPLE" || fail "ffmpeg multipart sample generation failed"
+      # шумовой источник: статичный testsrc сжимается ниже S3-минимума 5MB
+      ffmpeg -y -loglevel error -f lavfi -i "nullsrc=s=640x360:r=30:d=3,format=yuv420p,geq=lum='random(1)*255':cb='128':cr='128'" -f lavfi -i "sine=frequency=440:duration=3" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest "$MP_SAMPLE" || fail "ffmpeg multipart sample generation failed"
+    fi
+    MP_SIZE=$(stat -f%z "$MP_SAMPLE" 2>/dev/null || stat -c%s "$MP_SAMPLE")
+    if [ "$MP_SIZE" -lt $(( 5 * 1024 * 1024 + 1 )) ]; then
+      fail "multipart sample too small for S3 5MB part minimum ($MP_SIZE bytes) — set MP_SAMPLE to a >=5MB file"
     fi
     code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$GATEWAY/api/v1/videos/multipart" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"title\":\"$MP_TITLE\",\"description\":\"multipart e2e\",\"filename\":\"multipart-sample.mp4\",\"content_type\":\"video/mp4\"}")
     [ "$code" = "201" ] || fail "multipart create failed ($code): $(cat "$TMP/body")"
     MP_VIDEO_ID=$(jq -r '.video_id // .id' < "$TMP/body")
     [ -n "$MP_VIDEO_ID" ] && [ "$MP_VIDEO_ID" != "null" ] || fail "no video_id in multipart create response"
     say "   multipart video_id=$MP_VIDEO_ID"
-    MP_SIZE=$(stat -f%z "$MP_SAMPLE" 2>/dev/null || stat -c%s "$MP_SAMPLE")
     MP_PART1="$TMP/mp-part1.bin"
     MP_PART2="$TMP/mp-part2.bin"
-    HALF=$(( MP_SIZE / 2 ))
-    head -c "$HALF" "$MP_SAMPLE" > "$MP_PART1"
-    tail -c +"$(( HALF + 1 ))" "$MP_SAMPLE" > "$MP_PART2"
+    FIRST=$(( 5 * 1024 * 1024 ))
+    head -c "$FIRST" "$MP_SAMPLE" > "$MP_PART1"
+    tail -c +"$(( FIRST + 1 ))" "$MP_SAMPLE" > "$MP_PART2"
 
     upload_part() {
       # $1 = part number, $2 = file; presign-part then PUT direct to MinIO
