@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 PASSWORD_MIN_LENGTH = 8
 
@@ -19,6 +19,10 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    # рабочий пример для Swagger UI: dev-юзер из scripts/e2e.sh
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"email": "user@example.com", "password": "e2e-password"}}
+    )
     email: EmailStr
     password: str
 
