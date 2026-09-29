@@ -205,7 +205,9 @@ def test_refresh_token_without_exp_rejected():
 
     from src.core.config import settings
 
-    token = pyjwt.encode({"sub": str(uuid.uuid4()), "type": "refresh"}, settings.jwt_secret, algorithm="HS256")
+    token = pyjwt.encode(
+        {"sub": str(uuid.uuid4()), "type": "refresh"}, settings.jwt_secret, algorithm="HS256"
+    )
     c = TestClient(app)
     r = c.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 401
@@ -230,13 +232,22 @@ def test_validate_secrets_fail_fast(monkeypatch):
     validate_secrets()  # dev bypass — no exception
 
 
-def test_refresh_success():
+def test_refresh_success(fake_store):
     uid = str(uuid.uuid4())
-    refresh = create_refresh_token(uid)
-    c = TestClient(app)
+    jti = uuid.uuid4().hex
+    fake_store.data[uid] = jti
+    u = fake_user()
+    u.id = uuid.UUID(uid)
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=FakeResult(u))
+    c = client_with_mock(mock_db)
+    refresh = create_refresh_token(uid, jti)
     r = c.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {refresh}"})
+    clear_overrides()
     assert r.status_code == 200, r.text
     assert "access_token" in r.json()
+    # ротация: в store теперь новый jti, старый отозван
+    assert fake_store.data[uid] != jti
 
 
 def test_refresh_with_access_token_rejected():
@@ -268,8 +279,107 @@ def test_login_rate_limit():
     except Exception:
         pass
     for _ in range(5):
-        r = c.post("/api/v1/auth/login", json={"email": "ratelimit@example.com", "password": "secret123"})
+        r = c.post(
+            "/api/v1/auth/login", json={"email": "ratelimit@example.com", "password": "secret123"}
+        )
         assert r.status_code == 200, r.text
-    r = c.post("/api/v1/auth/login", json={"email": "ratelimit@example.com", "password": "secret123"})
+    r = c.post(
+        "/api/v1/auth/login", json={"email": "ratelimit@example.com", "password": "secret123"}
+    )
     assert r.status_code == 429, r.text
     clear_overrides()
+
+
+def test_refresh_reused_token_rejected(fake_store):
+    # issue #64: повторное использование старого refresh после ротации → 401
+    uid = str(uuid.uuid4())
+    jti = uuid.uuid4().hex
+    fake_store.data[uid] = jti
+    u = fake_user()
+    u.id = uuid.UUID(uid)
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=FakeResult(u))
+    c = client_with_mock(mock_db)
+    old_token = create_refresh_token(uid, jti)
+    r1 = c.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {old_token}"})
+    assert r1.status_code == 200, r1.text
+    r2 = c.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {old_token}"})
+    assert r2.status_code == 401, r2.text
+    # новый refresh из r1 продолжает работать
+    new_token = r1.json()["refresh_token"]
+    r3 = c.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {new_token}"})
+    clear_overrides()
+    assert r3.status_code == 200, r3.text
+
+
+def test_refresh_unknown_user_rejected(fake_store):
+    # issue #64: /refresh проверяет существование юзера
+    uid = str(uuid.uuid4())
+    jti = uuid.uuid4().hex
+    fake_store.data[uid] = jti
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=FakeResult(None))
+    c = client_with_mock(mock_db)
+    refresh = create_refresh_token(uid, jti)
+    r = c.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {refresh}"})
+    clear_overrides()
+    assert r.status_code == 401, r.text
+
+
+def test_refresh_token_without_jti_rejected():
+    # issue #64: refresh-токены до ротации (без jti) отозваны
+    import jwt as pyjwt
+
+    from src.core.config import settings
+
+    token = pyjwt.encode(
+        {"sub": str(uuid.uuid4()), "exp": 9999999999, "type": "refresh"},
+        settings.jwt_secret,
+        algorithm="HS256",
+    )
+    c = TestClient(app)
+    r = c.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401, r.text
+
+
+def test_refresh_store_unavailable_503(fake_store):
+    # issue #64: Redis недоступен → fail closed (503), reuse-детекция не отключается
+    uid = str(uuid.uuid4())
+    fake_store.fail = True
+    jti = uuid.uuid4().hex
+    u = fake_user()
+    u.id = uuid.UUID(uid)
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=FakeResult(u))
+    c = client_with_mock(mock_db)
+    refresh = create_refresh_token(uid, jti)
+    r = c.post("/api/v1/auth/refresh", headers={"Authorization": f"Bearer {refresh}"})
+    clear_overrides()
+    assert r.status_code == 503, r.text
+
+
+def test_register_rate_limit():
+    # issue #64: register под лимитом, как login
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=FakeResult(None))
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+    mock_db.refresh = AsyncMock()
+    c = client_with_mock(mock_db)
+    try:
+        from src.core.limiter import limiter as _lim
+
+        if _lim is not None and hasattr(_lim, "_storage"):
+            _lim._storage.reset()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    for i in range(5):
+        r = c.post(
+            "/api/v1/auth/register", json={"email": f"reg{i}@example.com", "password": "secret123"}
+        )
+        assert r.status_code == 201, r.text
+    r = c.post(
+        "/api/v1/auth/register", json={"email": "reg-last@example.com", "password": "secret123"}
+    )
+    clear_overrides()
+    assert r.status_code == 429, r.text

@@ -46,11 +46,17 @@ def create_access_token(sub: str) -> str:
     )
 
 
-def create_refresh_token(sub: str) -> str:
+def create_refresh_token(sub: str, jti: str) -> str:
     exp = datetime.now(timezone.utc) + _parse_ttl(settings.jwt_refresh_ttl)
     return jwt.encode(
-        {"sub": sub, "exp": exp, "type": "refresh"}, settings.jwt_secret, algorithm=ALGO
+        {"sub": sub, "exp": exp, "jti": jti, "type": "refresh"},
+        settings.jwt_secret,
+        algorithm=ALGO,
     )
+
+
+def refresh_ttl_seconds() -> int:
+    return int(_parse_ttl(settings.jwt_refresh_ttl).total_seconds())
 
 
 def decode_token(token: str) -> dict:

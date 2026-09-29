@@ -40,11 +40,20 @@ uv run --project services/auth pytest --cov
 
 ## Rate-limit (issue #52)
 `/api/v1/auth/login` — slowapi 5/minute, Redis storage (`REDIS_URL`).
+`/api/v1/auth/register` — 5/minute, `/api/v1/auth/refresh` — 30/minute (issue #64).
 Ключ лимитера — реальный IP клиента из `X-Real-IP`, который выставляет gateway
 (затирая клиентские подделки). `X-Real-IP` доверяем только когда непосредственный
 пир в `TRUSTED_PROXY_CIDRS` (compose задаёт docker-сеть `172.16.0.0/12`; порт auth
 публикуется только на 127.0.0.1 — ревью фазы 17, H1), иначе ключ по peer IP.
 Без этого один абузер блокировал бы всех (slowapi видел только IP gateway).
+
+## Refresh-ротация (issue #64)
+Каждый refresh-токен несёт `jti`; в Redis (`auth:refresh:<user_id>`) хранится
+активный jti юзера. `/refresh` проверяет юзера в БД и атомарно (Lua) заменяет
+активный jti: reuse старого refresh → 401, новый refresh работает дальше.
+Логин/регистрация выдают новую пару и перезаписывают активный jti — активна
+одна refresh-сессия на юзера. Redis недоступен → 503 (fail closed, reuse-детекция
+не отключается). Refresh-токены, выпущенные до ротации (без `jti`), отозваны.
 
 ## Zed IDE (при сохранении)
 Настроено в `.zed/settings.json:1`:
