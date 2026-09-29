@@ -121,8 +121,16 @@ async function request<T>(path: string, init?: RequestInit, retried = false): Pr
     headers: { ...(init?.headers as Record<string, string>), ...authHeaders() },
   });
   if (res.status === 401 && !retried && !AUTH_PATHS.some((p) => path.startsWith(p))) {
+    const refreshBefore = typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null;
     if (await tryRefresh()) {
       // authHeaders() прочитает уже обновлённый access_token из localStorage
+      return request<T>(path, init, true);
+    }
+    // issue #64 x #60: refresh-ротация одна на юзера. Если во время нашего
+    // неудачного refresh другая вкладка уже провернула ротацию и записала
+    // свежие токены — нельзя их затирать logout'ом, ретраим с ними.
+    const refreshNow = typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null;
+    if (refreshNow !== refreshBefore) {
       return request<T>(path, init, true);
     }
     await handleRefreshFailure();
@@ -219,8 +227,8 @@ export async function presignPart(videoId: string, partNumber: number): Promise<
   });
 }
 
-export async function completeMultipart(videoId: string): Promise<Video> {
-  return request<Video>(`/api/v1/videos/${videoId}/multipart/complete`, { method: "POST" });
+export async function completeMultipart(videoId: string): Promise<{ id: string; s3_key: string; status: string }> {
+  return request<{ id: string; s3_key: string; status: string }>(`/api/v1/videos/${videoId}/multipart/complete`, { method: "POST" });
 }
 
 function putPartToPresignedUrl(
@@ -258,19 +266,40 @@ async function uploadVideoMultipart(
   description: string,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal,
-): Promise<Video> {
-  const created = await createMultipartVideo(title, description, file.name, file.type || "video/mp4");
-  const chunkSize = created.chunk_size || MULTIPART_CHUNK_SIZE;
+): Promise<{ id: string }> {
+  // resume across attempts (issue #56): persist the created video_id keyed by
+  // file identity — an id, not a credential; re-upload continues the session
+  const resumeKey = `multipart-video:${file.name}:${file.size}:${file.lastModified}`;
+  let chunkSize = MULTIPART_CHUNK_SIZE;
+  let videoId: string | null = null;
+  const uploadedParts = new Set<number>();
+  if (typeof window !== "undefined") {
+    videoId = localStorage.getItem(resumeKey);
+  }
+  if (videoId) {
+    try {
+      const state = await listMultipartParts(videoId);
+      chunkSize = state.chunk_size || chunkSize;
+      state.parts.forEach((p) => uploadedParts.add(p.part_number));
+    } catch {
+      // сессия уже завершена/отсутствует — начинаем заново
+      videoId = null;
+      if (typeof window !== "undefined") localStorage.removeItem(resumeKey);
+    }
+  }
+  if (!videoId) {
+    const created = await createMultipartVideo(title, description, file.name, file.type || "video/mp4");
+    videoId = created.video_id;
+    chunkSize = created.chunk_size || chunkSize;
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(resumeKey, videoId);
+      } catch {}
+    }
+  }
   const totalParts = Math.max(1, Math.ceil(file.size / chunkSize));
   const lastPartSize = file.size - (totalParts - 1) * chunkSize;
   const partSize = (n: number) => (n === totalParts ? lastPartSize : chunkSize);
-
-  // resume: skip parts already uploaded in a previous attempt (issue #56)
-  const uploadedParts = new Set<number>();
-  try {
-    const state = await listMultipartParts(created.video_id);
-    state.parts.forEach((p) => uploadedParts.add(p.part_number));
-  } catch {}
   let uploadedBytes = 0;
   for (let n = 1; n <= totalParts; n++) {
     if (uploadedParts.has(n)) uploadedBytes += partSize(n);
@@ -282,7 +311,7 @@ async function uploadVideoMultipart(
     if (uploadedParts.has(n)) continue;
     const start = (n - 1) * chunkSize;
     const chunk = file.slice(start, start + partSize(n));
-    const { url } = await presignPart(created.video_id, n);
+    const { url } = await presignPart(videoId, n);
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -306,7 +335,9 @@ async function uploadVideoMultipart(
     uploadedBytes += chunk.size;
     report();
   }
-  return completeMultipart(created.video_id);
+  const video = await completeMultipart(videoId);
+  if (typeof window !== "undefined") localStorage.removeItem(resumeKey);
+  return video;
 }
 
 // Upload: S3 multipart for all sizes; legacy gateway proxy fallback for <100MB
@@ -316,7 +347,7 @@ export async function uploadVideo(
   description: string,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal,
-): Promise<Video> {
+): Promise<{ id: string }> {
   try {
     return await uploadVideoMultipart(file, title, description, onProgress, signal);
   } catch (e) {
