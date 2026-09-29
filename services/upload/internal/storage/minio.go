@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -145,4 +147,118 @@ func (m *MinioClient) RemoveObject(ctx context.Context, key string) error {
 		return fmt.Errorf("remove %s: %w", key, err)
 	}
 	return nil
+}
+
+// MultipartPart is a storage-agnostic view of an uploaded S3 part (issue #56).
+type MultipartPart struct {
+	PartNumber int
+	Size       int64
+	ETag       string
+}
+
+// publicClient returns a client that signs for the browser-visible host.
+// SigV4 signs the host, so presigned URLs must be issued for the public
+// endpoint (see PresignedPutObjectExternal).
+func (m *MinioClient) publicClient(publicEndpoint string) (*minio.Client, error) {
+	if publicEndpoint == "" {
+		return m.client, nil
+	}
+	pub, err := url.Parse(publicEndpoint)
+	if err != nil || pub.Host == "" {
+		return m.client, nil
+	}
+	tmpClient, err := minio.New(pub.Host, &minio.Options{
+		Creds:        credentials.NewStaticV4(m.accessKey, m.secretKey, ""),
+		Secure:       pub.Scheme == "https",
+		Region:       "us-east-1",
+		BucketLookup: minio.BucketLookupPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("public client %s: %w", publicEndpoint, err)
+	}
+	return tmpClient, nil
+}
+
+// CreateMultipartUpload starts an S3 multipart session for key (issue #56).
+func (m *MinioClient) CreateMultipartUpload(ctx context.Context, key, contentType string) (string, error) {
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	core := minio.Core{Client: m.client}
+	uploadID, err := core.NewMultipartUpload(ctx, m.bucket, key, minio.PutObjectOptions{ContentType: contentType})
+	if err != nil {
+		return "", fmt.Errorf("create multipart upload %s: %w", key, err)
+	}
+	return uploadID, nil
+}
+
+// FindUploadID returns the in-progress multipart upload for key, or an
+// error mentioning "not found" when none exists — the client never tracks
+// upload_id, resume works from server-side state (issue #56).
+func (m *MinioClient) FindUploadID(ctx context.Context, key string) (string, error) {
+	core := minio.Core{Client: m.client}
+	res, err := core.ListMultipartUploads(ctx, m.bucket, key, "", "", "", 1000)
+	if err != nil {
+		return "", fmt.Errorf("list multipart uploads %s: %w", key, err)
+	}
+	for _, u := range res.Uploads {
+		if u.Key == key {
+			return u.UploadID, nil
+		}
+	}
+	return "", fmt.Errorf("multipart upload not found for %s", key)
+}
+
+// ListParts returns uploaded parts ordered by part number.
+func (m *MinioClient) ListParts(ctx context.Context, key, uploadID string) ([]MultipartPart, error) {
+	core := minio.Core{Client: m.client}
+	var parts []MultipartPart
+	marker := 0
+	for {
+		res, err := core.ListObjectParts(ctx, m.bucket, key, uploadID, marker, 1000)
+		if err != nil {
+			return nil, fmt.Errorf("list parts %s: %w", key, err)
+		}
+		for _, p := range res.ObjectParts {
+			parts = append(parts, MultipartPart{PartNumber: p.PartNumber, Size: p.Size, ETag: p.ETag})
+		}
+		if !res.IsTruncated || len(res.ObjectParts) == 0 {
+			return parts, nil
+		}
+		marker = res.NextPartNumberMarker
+	}
+}
+
+// CompleteMultipartUpload finishes the session with the listed parts.
+func (m *MinioClient) CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []MultipartPart) (int64, error) {
+	if len(parts) == 0 {
+		return 0, fmt.Errorf("no parts uploaded for %s", key)
+	}
+	cp := make([]minio.CompletePart, 0, len(parts))
+	for _, p := range parts {
+		cp = append(cp, minio.CompletePart{PartNumber: p.PartNumber, ETag: p.ETag})
+	}
+	core := minio.Core{Client: m.client}
+	info, err := core.CompleteMultipartUpload(ctx, m.bucket, key, uploadID, cp, minio.PutObjectOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("complete multipart upload %s: %w", key, err)
+	}
+	return info.Size, nil
+}
+
+// PresignPart returns a presigned PUT URL for a single part; the browser
+// uploads chunks directly to MinIO, the server never proxies part bytes.
+func (m *MinioClient) PresignPart(ctx context.Context, key, uploadID string, partNumber int, expires time.Duration, publicEndpoint string) (string, error) {
+	client, err := m.publicClient(publicEndpoint)
+	if err != nil {
+		return "", err
+	}
+	q := url.Values{}
+	q.Set("partNumber", strconv.Itoa(partNumber))
+	q.Set("uploadId", uploadID)
+	u, err := client.Presign(ctx, http.MethodPut, m.bucket, key, expires, q)
+	if err != nil {
+		return "", fmt.Errorf("presign part %d %s: %w", partNumber, key, err)
+	}
+	return u.String(), nil
 }

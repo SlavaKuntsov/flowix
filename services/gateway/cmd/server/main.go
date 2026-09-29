@@ -180,6 +180,11 @@ func newRouter(cfg routerConfig) *chi.Mux {
 	// --- Resumable Content-Range fallback (backlog) ---
 	r.With(authMw).Get("/api/v1/videos/{id}/resumable", uploadProxy.ServeHTTP)
 	r.With(authMw, maxBytesMw).Put("/api/v1/videos/{id}/resumable", uploadProxy.ServeHTTP)
+	// --- S3 multipart upload (issue #56): JSON-маршруты, чанки идут напрямую в MinIO ---
+	r.With(authMw).Post("/api/v1/videos/multipart", uploadProxy.ServeHTTP)
+	r.With(authMw).Get("/api/v1/videos/{id}/multipart", uploadProxy.ServeHTTP)
+	r.With(authMw).Post("/api/v1/videos/{id}/multipart/presign-part", uploadProxy.ServeHTTP)
+	r.With(authMw).Post("/api/v1/videos/{id}/multipart/complete", uploadProxy.ServeHTTP)
 
 	// --- HLS token for private videos (signed URL 1h) — must be before generic /videos/* proxy ---
 	r.With(authMw).Get("/api/v1/videos/{id}/hls-token", gwmw.HLSTokenHandler(cfg.jwtSecret, cfg.internalToken, cfg.metadataURL))

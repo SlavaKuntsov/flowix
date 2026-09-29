@@ -1,10 +1,293 @@
 basePath: /
+definitions:
+  flowix_upload_internal_storage.MultipartPart:
+    properties:
+      etag:
+        type: string
+      partNumber:
+        type: integer
+      size:
+        format: int64
+        type: integer
+    type: object
+  internal_handler.multipartCreateResponse:
+    properties:
+      chunk_size:
+        type: integer
+      id:
+        type: string
+      s3_key:
+        type: string
+      upload_id:
+        type: string
+      video_id:
+        type: string
+    type: object
+  internal_handler.multipartPartsResponse:
+    properties:
+      chunk_size:
+        type: integer
+      parts:
+        items:
+          $ref: '#/definitions/flowix_upload_internal_storage.MultipartPart'
+        type: array
+      upload_id:
+        type: string
+      video_id:
+        type: string
+    type: object
+  internal_handler.presignPartRequest:
+    properties:
+      part_number:
+        type: integer
+    type: object
+  internal_handler.presignPartResponse:
+    properties:
+      expires_in:
+        type: integer
+      part_number:
+        type: integer
+      url:
+        type: string
+    type: object
+  internal_handler.presignRequest:
+    properties:
+      content_type:
+        type: string
+      description:
+        type: string
+      filename:
+        type: string
+      title:
+        type: string
+    type: object
+  internal_handler.presignResponse:
+    properties:
+      expires_in:
+        type: integer
+      id:
+        type: string
+      method:
+        type: string
+      s3_key:
+        type: string
+      url:
+        type: string
+      video_id:
+        type: string
+    type: object
+  internal_handler.statusResponse:
+    properties:
+      total:
+        type: integer
+      uploaded:
+        type: integer
+    type: object
 info:
   contact: {}
   description: Upload video to MinIO + publish video.uploaded event. JWT required.
   title: Flowix Upload API
   version: "1.0"
 paths:
+  /api/v1/videos/{id}/complete:
+    post:
+      consumes:
+      - application/json
+      description: Verifies raw object exists in MinIO, then publishes video.uploaded
+        event. Idempotent.
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Complete presigned upload
+      tags:
+      - upload
+  /api/v1/videos/{id}/multipart:
+    get:
+      description: Returns the in-progress upload parts for resume. upload_id is resolved
+        server-side.
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handler.multipartPartsResponse'
+      summary: List uploaded multipart parts
+      tags:
+      - upload
+  /api/v1/videos/{id}/multipart/complete:
+    post:
+      description: Lists uploaded parts server-side, completes the multipart session
+        and publishes video.uploaded. Idempotent until the session is gone.
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Complete S3 multipart upload
+      tags:
+      - upload
+  /api/v1/videos/{id}/multipart/presign-part:
+    post:
+      consumes:
+      - application/json
+      description: Returns a presigned PUT URL for one part; the browser uploads the
+        chunk directly to MinIO.
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Part number
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handler.presignPartRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handler.presignPartResponse'
+      security:
+      - BearerAuth: []
+      summary: Presign a single multipart part
+      tags:
+      - upload
+  /api/v1/videos/{id}/resumable:
+    get:
+      description: Returns uploaded bytes for raw/{id}/original.mp4. Used for Content-Range
+        resume.
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handler.statusResponse'
+      summary: Get resumable upload offset
+      tags:
+      - upload
+    put:
+      description: 'Accepts PUT with Content-Range: bytes start-end/total. Appends
+        chunk to raw/{id}/original.mp4 on MinIO. Returns 308 Resume Incomplete until
+        complete, 200 when done.'
+      parameters:
+      - description: Video ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: bytes 0-999/5000
+        in: header
+        name: Content-Range
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "308":
+          description: Permanent Redirect
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Resumable chunk upload via Content-Range
+      tags:
+      - upload
+  /api/v1/videos/multipart:
+    post:
+      consumes:
+      - application/json
+      description: Creates metadata record and starts a multipart session for raw/{id}/original.mp4.
+        Presign parts next, then call complete.
+      parameters:
+      - description: Presign request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handler.presignRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_handler.multipartCreateResponse'
+      security:
+      - BearerAuth: []
+      summary: Create S3 multipart upload
+      tags:
+      - upload
+  /api/v1/videos/presign:
+    post:
+      consumes:
+      - application/json
+      description: Creates metadata record and returns presigned PUT URL for raw/{id}/original.mp4.
+        Client PUTs directly to MinIO, then calls complete.
+      parameters:
+      - description: Presign request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handler.presignRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_handler.presignResponse'
+      security:
+      - BearerAuth: []
+      summary: Presign upload via direct MinIO PUT
+      tags:
+      - upload
   /api/v1/videos/upload:
     post:
       consumes:

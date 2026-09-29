@@ -26,6 +26,16 @@ open http://localhost:8003/swagger/doc.json
 ## Ownership (issue #46)
 `complete`, `GET/PUT resumable` и presign-пути перед записью в `raw/{id}/*` проверяют владельца через metadata internal-API (`GET /internal/videos/{id}`, заголовок `X-Internal-Token` из `INTERNAL_TOKEN`): чужой id → `403`, несуществующий → `404`, metadata недоступна → `502` (fail-closed). `complete` дополнительно сверяет объект в MinIO: пустой или не-`video/*` content-type → `400`.
 
+## S3 multipart upload (issue #56)
+Основной флоу загрузки вместо Content-Range append (тот был O(n²): каждый чанк перечитывал и перезаливал весь объект):
+
+- `POST /api/v1/videos/multipart` — создаёт metadata-запись и multipart-сессию для `raw/{id}/original.mp4` → `{video_id, upload_id, chunk_size}` (8MB).
+- `GET /api/v1/videos/{id}/multipart` — список загруженных частей; `upload_id` резолвится на сервере (`ListMultipartUploads`), клиент его не хранит — resume работает после потери состояния.
+- `POST /api/v1/videos/{id}/multipart/presign-part` `{part_number}` — presigned PUT URL одной части, чанк идёт напрямую в MinIO.
+- `POST /api/v1/videos/{id}/multipart/complete` — сервер сам листит части (`ListParts`) и закрывает сессию (`CompleteMultipartUpload`), публикует `video.uploaded`. Нет ни одной части → `400`.
+
+Все маршруты проверяют ownership как resumable. E2E: секция `8b` в `scripts/e2e.sh` (upload с обрывом посередине → resume → complete).
+
 ## Линт / формат
 ```bash
 make fmt-go

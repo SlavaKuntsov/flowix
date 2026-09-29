@@ -181,168 +181,119 @@ export async function updateVideo(id: string, data: { title?: string; descriptio
   return request<Video>(`/api/v1/videos/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
 }
 
-// Presigned upload: direct PUT to MinIO (Phase 11) — gateway only creates presign, file bypasses Go proxy
-export interface PresignResponse {
+// S3 multipart upload (issue #56): the browser PUTs presigned chunks directly
+// to MinIO; the server only creates the session, presigns parts and completes.
+export const MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024;
+
+export interface MultipartCreateResponse {
   id: string;
   video_id: string;
   s3_key: string;
-  method: string;
-  url: string;
-  expires_in: number;
+  upload_id: string;
+  chunk_size: number;
 }
 
-export async function presignVideo(title: string, description: string, filename: string, contentType: string): Promise<PresignResponse> {
-  return request<PresignResponse>("/api/v1/videos/presign", {
+export interface MultipartPart {
+  part_number: number;
+  size: number;
+  etag: string;
+}
+
+export async function createMultipartVideo(title: string, description: string, filename: string, contentType: string): Promise<MultipartCreateResponse> {
+  return request<MultipartCreateResponse>("/api/v1/videos/multipart", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title, description, filename, content_type: contentType }),
   });
 }
 
-export async function completeVideo(videoId: string): Promise<Video> {
-  return request<Video>(`/api/v1/videos/${videoId}/complete`, { method: "POST" });
+export async function listMultipartParts(videoId: string): Promise<{ upload_id: string; chunk_size: number; parts: MultipartPart[] }> {
+  return request(`/api/v1/videos/${videoId}/multipart`);
 }
 
-// Backlog Content-Range resumable fallback — gateway proxies to upload service
-export async function getResumableOffset(videoId: string): Promise<number> {
-  const data = await request<{ uploaded: number }>(`/api/v1/videos/${videoId}/resumable`);
-  return data.uploaded ?? 0;
+export async function presignPart(videoId: string, partNumber: number): Promise<{ part_number: number; url: string; expires_in: number }> {
+  return request(`/api/v1/videos/${videoId}/multipart/presign-part`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ part_number: partNumber }),
+  });
 }
 
-function putResumableChunk(
-  videoId: string,
+export async function completeMultipart(videoId: string): Promise<Video> {
+  return request<Video>(`/api/v1/videos/${videoId}/multipart/complete`, { method: "POST" });
+}
+
+function putPartToPresignedUrl(
+  url: string,
   chunk: Blob,
-  start: number,
-  end: number,
-  total: number,
-  contentType: string,
-  onProgress?: (pct: number) => void,
+  onProgress?: (chunkPct: number) => void,
   signal?: AbortSignal,
-): Promise<{ uploaded: number; status: string }> {
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const url = `${base()}/api/v1/videos/${videoId}/resumable`;
     xhr.open("PUT", url);
-    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
-    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-    xhr.setRequestHeader("Content-Range", `bytes ${start}-${end}/${total}`);
-    if (contentType) xhr.setRequestHeader("Content-Type", contentType);
     if (signal?.aborted) {
       reject(new DOMException("aborted", "AbortError"));
       return;
     }
     signal?.addEventListener("abort", () => xhr.abort());
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        const base = (start / total) * 100;
-        const chunkPct = (e.loaded / e.total) * ((end - start + 1) / total) * 100;
-        onProgress(Math.round(base + chunkPct));
-      }
+      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
     };
     xhr.onload = () => {
-      if (xhr.status === 308 || (xhr.status >= 200 && xhr.status < 300)) {
-        try {
-          resolve(JSON.parse(xhr.responseText));
-        } catch {
-          resolve({ uploaded: end + 1, status: "resume" });
-        }
-      } else {
-        reject(new Error(`resumable PUT failed: ${xhr.status} ${xhr.responseText}`));
-      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`part PUT failed: ${xhr.status} ${xhr.responseText}`));
     };
-    xhr.onerror = () => reject(new Error("network error during resumable PUT"));
+    xhr.onerror = () => reject(new Error("network error during part PUT"));
     xhr.onabort = () => reject(new DOMException("aborted", "AbortError"));
     xhr.send(chunk);
   });
 }
 
-export async function uploadResumable(
-  videoId: string,
-  file: File,
-  onProgress?: (pct: number) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const total = file.size;
-  let offset = 0;
-  try {
-    offset = await getResumableOffset(videoId);
-  } catch {}
-  // if offset >0, resume from there; else from 0
-  if (offset > total) offset = 0;
-  const chunkSize = total - offset; // single chunk for simplicity; could split into 5MB pieces
-  if (chunkSize <= 0) return;
-  const chunk = file.slice(offset, offset + chunkSize);
-  await putResumableChunk(videoId, chunk, offset, offset + chunkSize - 1, total, file.type || "video/mp4", onProgress, signal);
-}
-
-function putToPresignedUrl(
-  url: string,
-  file: File,
-  contentType: string,
-  onProgress?: (pct: number) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("PUT", url);
-    if (contentType) xhr.setRequestHeader("Content-Type", contentType);
-    if (signal?.aborted) {
-      reject(new DOMException("aborted", "AbortError"));
-      return;
-    }
-    signal?.addEventListener("abort", () => xhr.abort());
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`presigned PUT failed: ${xhr.status} ${xhr.responseText}`));
-    };
-    xhr.onerror = () => reject(new Error("network error during presigned PUT"));
-    xhr.onabort = () => reject(new DOMException("aborted", "AbortError"));
-    xhr.send(file);
-  });
-}
-
-// Upload: presigned direct to MinIO with fallback to legacy gateway proxy for <100MB
-export async function uploadVideo(
+// Chunks of 5-10MB (issue #56): S3 requires every part except the last to be
+// ≥5MB; the server sends its chunk_size, this constant is the fallback.
+async function uploadVideoMultipart(
   file: File,
   title: string,
   description: string,
   onProgress?: (pct: number) => void,
   signal?: AbortSignal,
 ): Promise<Video> {
-  // Phase 11: use presigned PUT for all files; legacy fallback if presign fails
-  const storageKey = `presign:${file.name}:${file.size}:${file.lastModified}`;
+  const created = await createMultipartVideo(title, description, file.name, file.type || "video/mp4");
+  const chunkSize = created.chunk_size || MULTIPART_CHUNK_SIZE;
+  const totalParts = Math.max(1, Math.ceil(file.size / chunkSize));
+  const lastPartSize = file.size - (totalParts - 1) * chunkSize;
+  const partSize = (n: number) => (n === totalParts ? lastPartSize : chunkSize);
+
+  // resume: skip parts already uploaded in a previous attempt (issue #56)
+  const uploadedParts = new Set<number>();
   try {
-    let presign: PresignResponse | null = null;
-    // resume: reuse pending presign from localStorage if exists and not expired
-    if (typeof window !== "undefined") {
-      try {
-        const cached = localStorage.getItem(storageKey);
-        if (cached) {
-          const parsed = JSON.parse(cached) as PresignResponse & { _ts: number };
-          if (Date.now() - parsed._ts < parsed.expires_in * 1000 - 60000) {
-            presign = parsed;
-          } else {
-            localStorage.removeItem(storageKey);
-          }
-        }
-      } catch {}
-    }
-    if (!presign) {
-      presign = await presignVideo(title || file.name, description, file.name, file.type || "video/mp4");
-      if (typeof window !== "undefined") {
-        try {
-          localStorage.setItem(storageKey, JSON.stringify({ ...presign, _ts: Date.now() }));
-        } catch {}
-      }
-    }
-    // retry PUT up to 3 times
+    const state = await listMultipartParts(created.video_id);
+    state.parts.forEach((p) => uploadedParts.add(p.part_number));
+  } catch {}
+  let uploadedBytes = 0;
+  for (let n = 1; n <= totalParts; n++) {
+    if (uploadedParts.has(n)) uploadedBytes += partSize(n);
+  }
+  const report = () => onProgress?.(Math.min(99, Math.round((uploadedBytes / file.size) * 100)));
+  report();
+
+  for (let n = 1; n <= totalParts; n++) {
+    if (uploadedParts.has(n)) continue;
+    const start = (n - 1) * chunkSize;
+    const chunk = file.slice(start, start + partSize(n));
+    const { url } = await presignPart(created.video_id, n);
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        await putToPresignedUrl(presign.url, file, file.type || "video/mp4", onProgress, signal);
+        await putPartToPresignedUrl(
+          url,
+          chunk,
+          onProgress
+            ? (chunkPct) => onProgress(Math.min(99, Math.round(((uploadedBytes + chunk.size * chunkPct) / file.size) * 100)))
+            : undefined,
+          signal,
+        );
         lastErr = null;
         break;
       } catch (e) {
@@ -351,25 +302,29 @@ export async function uploadVideo(
         if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
       }
     }
-    if (lastErr) {
-      // Backlog Content-Range fallback: try resumable via gateway before giving up
-      try {
-        await uploadResumable(presign.video_id, file, onProgress, signal);
-        const video = await completeVideo(presign.video_id);
-        if (typeof window !== "undefined") localStorage.removeItem(storageKey);
-        return video;
-      } catch {}
-      throw lastErr;
-    }
-    const video = await completeVideo(presign.video_id);
-    if (typeof window !== "undefined") localStorage.removeItem(storageKey);
-    return video;
+    if (lastErr) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+    uploadedBytes += chunk.size;
+    report();
+  }
+  return completeMultipart(created.video_id);
+}
+
+// Upload: S3 multipart for all sizes; legacy gateway proxy fallback for <100MB
+export async function uploadVideo(
+  file: File,
+  title: string,
+  description: string,
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
+): Promise<Video> {
+  try {
+    return await uploadVideoMultipart(file, title, description, onProgress, signal);
   } catch (e) {
-    // fallback to legacy gateway upload for small files if presign flow fails (e.g., server not updated)
+    if (signal?.aborted) throw e;
+    // fallback to legacy gateway upload for small files if multipart flow fails
     if (file.size < 100 * 1024 * 1024) {
       return uploadViaGateway(file, title, description, onProgress);
     }
-    // last resort: if we already have a presign, try resumable again
     throw e instanceof Error ? e : new Error(String(e));
   }
 }

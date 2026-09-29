@@ -71,6 +71,7 @@ func main() {
 	uh := handler.NewUploadHandler(store, pub, metaCl)
 	ph := handler.NewPresignHandler(store, pub, metaCl, metaCl)
 	rh := handler.NewResumableHandler(store, metaCl)
+	mp := handler.NewMultipartHandler(store, pub, metaCl, metaCl)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.Recoverer, pkgmw.RequestLogger("upload"))
@@ -93,6 +94,11 @@ func main() {
 		r.Post("/api/v1/videos/complete", ph.Complete)
 		r.Get("/api/v1/videos/{id}/resumable", rh.Status)
 		r.Put("/api/v1/videos/{id}/resumable", rh.Upload)
+		// S3 multipart upload (issue #56) — чанки идут напрямую в MinIO
+		r.Post("/api/v1/videos/multipart", mp.Create)
+		r.Get("/api/v1/videos/{id}/multipart", mp.Parts)
+		r.Post("/api/v1/videos/{id}/multipart/presign-part", mp.PresignPart)
+		r.Post("/api/v1/videos/{id}/multipart/complete", mp.Complete)
 	})
 
 	logger.Info().Str("port", port).Str("bucket", bucket).Str("metadata", metadataURL).Msg("upload starting")

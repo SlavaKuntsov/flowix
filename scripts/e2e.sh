@@ -333,6 +333,74 @@ else
   say "   SKIP presign (PRESIGN_SKIP set)"
 fi
 
+say "8b) multipart flow (POST /multipart → presign-part → PUT parts with resume → POST /multipart/complete)"
+if [ -z "${MULTIPART_SKIP:-}" ]; then
+  if [ -n "${TOKEN:-}" ]; then
+    MP_TITLE="e2e-multipart-$(date +%s)"
+    say "   multipart create $MP_TITLE"
+    MP_SAMPLE="${MP_SAMPLE:-$SAMPLE}"
+    if [ -z "$MP_SAMPLE" ] || [ ! -f "$MP_SAMPLE" ]; then
+      MP_SAMPLE="$TMP/multipart-sample.mp4"
+      ffmpeg -y -loglevel error -f lavfi -i "testsrc=size=640x360:rate=30:duration=3" -f lavfi -i "sine=frequency=440:duration=3" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "$MP_SAMPLE" || fail "ffmpeg multipart sample generation failed"
+    fi
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$GATEWAY/api/v1/videos/multipart" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"title\":\"$MP_TITLE\",\"description\":\"multipart e2e\",\"filename\":\"multipart-sample.mp4\",\"content_type\":\"video/mp4\"}")
+    [ "$code" = "201" ] || fail "multipart create failed ($code): $(cat "$TMP/body")"
+    MP_VIDEO_ID=$(jq -r '.video_id // .id' < "$TMP/body")
+    [ -n "$MP_VIDEO_ID" ] && [ "$MP_VIDEO_ID" != "null" ] || fail "no video_id in multipart create response"
+    say "   multipart video_id=$MP_VIDEO_ID"
+    MP_SIZE=$(stat -f%z "$MP_SAMPLE" 2>/dev/null || stat -c%s "$MP_SAMPLE")
+    MP_PART1="$TMP/mp-part1.bin"
+    MP_PART2="$TMP/mp-part2.bin"
+    HALF=$(( MP_SIZE / 2 ))
+    head -c "$HALF" "$MP_SAMPLE" > "$MP_PART1"
+    tail -c +"$(( HALF + 1 ))" "$MP_SAMPLE" > "$MP_PART2"
+
+    upload_part() {
+      # $1 = part number, $2 = file; presign-part then PUT direct to MinIO
+      code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$GATEWAY/api/v1/videos/$MP_VIDEO_ID/multipart/presign-part" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "{\"part_number\":$1}")
+      [ "$code" = "200" ] || fail "presign-part $1 failed ($code): $(cat "$TMP/body")"
+      MP_URL=$(jq -r '.url' < "$TMP/body")
+      code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X PUT --data-binary "@$2" "$MP_URL")
+      [ "$code" = "200" ] || [ "$code" = "204" ] || fail "part PUT $1 failed ($code)"
+    }
+
+    # part 1 then "обрыв": part 2 не загружаем
+    upload_part 1 "$MP_PART1"
+    say "   part 1 uploaded, simulated interruption"
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' "$GATEWAY/api/v1/videos/$MP_VIDEO_ID/multipart" -H "Authorization: Bearer $TOKEN")
+    [ "$code" = "200" ] || fail "multipart parts listing failed ($code): $(cat "$TMP/body")"
+    MP_COUNT=$(jq '.parts | length' < "$TMP/body")
+    [ "$MP_COUNT" = "1" ] || fail "resume: want 1 listed part, got $MP_COUNT"
+    say "   resume: listed parts=$MP_COUNT (ok)"
+
+    upload_part 2 "$MP_PART2"
+    say "   part 2 uploaded (resume complete)"
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$GATEWAY/api/v1/videos/$MP_VIDEO_ID/multipart/complete" -H "Authorization: Bearer $TOKEN")
+    [ "$code" = "200" ] || fail "multipart complete failed ($code): $(cat "$TMP/body")"
+    say "   multipart complete: ok"
+
+    say "   poll multipart status (timeout ${POLL_TIMEOUT}s)"
+    deadline=$(( $(date +%s) + POLL_TIMEOUT ))
+    while :; do
+      code=$(curl -s -o "$TMP/body" -w '%{http_code}' "$METADATA/api/v1/videos/$MP_VIDEO_ID")
+      [ "$code" = "200" ] || fail "metadata get multipart video failed"
+      pstatus=$(jq -r '.status' < "$TMP/body")
+      say "   multipart status=$pstatus"
+      [ "$pstatus" = "ready" ] && break
+      [ "$pstatus" = "failed" ] && fail "multipart transcode reported failed"
+      [ "$(date +%s)" -ge "$deadline" ] && fail "timed out waiting for multipart ready (last=$pstatus)"
+      sleep "$POLL_INTERVAL"
+    done
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' "$GATEWAY/hls/$MP_VIDEO_ID/master.m3u8")
+    [ "$code" = "200" ] || fail "multipart master.m3u8 not 200: $code"
+    say "   multipart flow: ok"
+  else
+    say "   WARN: no TOKEN available — skipping multipart flow"
+  fi
+else
+  say "   SKIP multipart (MULTIPART_SKIP set)"
+fi
+
 say "9) private HLS (visibility private → 403 without token, 200 with token)"
 if [ -n "${TOKEN:-}" ] && [ -n "${VIDEO_ID:-}" ]; then
   # set video to private via gateway metadata PATCH
