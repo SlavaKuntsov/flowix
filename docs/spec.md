@@ -77,7 +77,7 @@ Each service has its own `Dockerfile` and can be developed independently. Go-с�
 - **Framework**: FastAPI (or Django + DRF).
 - **Database**: PostgreSQL (users, tokens).
 - **Communication**: Exposes `/auth/*` endpoints; other services validate JWT via middleware.
-- **JWT**: PyJWT (HS256) + argon2-cffi; токены содержат `exp`, `sub`, `type` (`access`/`refresh`); размер токена ограничен при decode (issue #48, CVE-2024-33663/33664).
+- **JWT**: PyJWT (HS256) + argon2-cffi; токены содержат `exp`, `sub`, `type` (`access`/`refresh`); refresh-токены также несут `jti` — активный jti юзера хранится в Redis, ротация в `/refresh` атомарна и отзывает старый refresh (reuse → 401), `/refresh` проверяет существование юзера; размер токена ограничен при decode (issue #48, CVE-2024-33663/33664).
 
 ### 5. Transcoding Worker (Python)
 - **Purpose**: Consume `video.uploaded` events, download original from MinIO, run FFmpeg to produce multiple renditions, upload results, publish `video.transcoded` event.
