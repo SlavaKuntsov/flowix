@@ -11,11 +11,13 @@ export default function UploadPage() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [doneId, setDoneId] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (uploading) return; // issue #61: двойной клик не должен запускать параллельную загрузку
     if (!file) {
       setError("Choose a file");
       return;
@@ -27,6 +29,7 @@ export default function UploadPage() {
     }
     setError(null);
     setProgress(0);
+    setUploading(true);
     try {
       const video = await uploadVideo(file, title || file.name, description, setProgress);
       setDoneId(video.id);
@@ -35,6 +38,8 @@ export default function UploadPage() {
     } catch (err) {
       setError((err as Error).message);
       setProgress(null);
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -79,7 +84,7 @@ export default function UploadPage() {
 
         <button
           type="submit"
-          disabled={progress !== null && progress < 100 && progress > 0}
+          disabled={uploading}
           className="w-full rounded bg-black py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
         >
           {progress !== null && progress < 100 ? `Uploading ${progress}%` : "Upload"}

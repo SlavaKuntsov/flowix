@@ -27,10 +27,13 @@ export default function WatchPage() {
   useEffect(() => {
     if (!id) return;
     let timer: ReturnType<typeof setInterval> | null = null;
+    // issue #61: поллинг с ошибками не должен жить вечно — 5 неудач подряд → стоп
+    let failures = 0;
 
     const fetchOnce = async () => {
       try {
         const v = await getVideo(id);
+        failures = 0;
         setVideo(v);
         setError(null);
         if (v.status === "ready" || v.status === "failed") {
@@ -38,6 +41,11 @@ export default function WatchPage() {
         }
       } catch (e) {
         setError((e as Error).message);
+        failures += 1;
+        if (failures >= 5 && timer) {
+          clearInterval(timer);
+          timer = null;
+        }
       } finally {
         setLoading(false);
       }
