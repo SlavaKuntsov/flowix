@@ -203,7 +203,7 @@ def test_me_with_refresh_token_rejected():
     # issue #76: refresh-токен — не identity для /me
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(return_value=FakeResult(None))
-    token = create_refresh_token(str(uuid.uuid4()))
+    token = create_refresh_token(str(uuid.uuid4()), uuid.uuid4().hex)
     c = client_with_mock(mock_db)
     r = c.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     clear_overrides()
