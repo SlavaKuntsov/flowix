@@ -24,7 +24,7 @@ The backend is split into microservices written in **Go** and **Python** to leve
 - **Message Queue**: RabbitMQ or Redis Streams
 - **Streaming Server**: nginx with `nginx-vod-module` (or custom Go service if preferred)
 - **Transcoding**: FFmpeg
-- **Frontend**: Next + Vite + hls.js (or video.js)
+- **Frontend**: Next.js 14 (App Router) + hls.js + zustand
 - **Containerization**: Docker, docker-compose
 
 ---
@@ -59,6 +59,7 @@ Each service has its own `Dockerfile` and can be developed independently. Go-с�
 ### 1. API Gateway (Go)
 - **Purpose**: Single entry point for client requests; routes to appropriate services; handles CORS, rate limiting, request aggregation.
 - **Security (issue #52)**: CORS — явный allowlist origin (`CORS_ALLOWED_ORIGINS`, без wildcard с credentials); rate-limit — fixed-window в Redis (`REDIS_URL`), fail-open при недоступности Redis; `X-Forwarded-For`/`X-Real-IP` доверяются только от trusted прокси (`TRUSTED_PROXY_CIDRS`), downstream получает проверенный `X-Real-IP` (по нему ключует лимитер auth).
+- **HLS (приватные видео)**: `GET /api/v1/videos/{id}/hls-token` выдаёт владельцу короткоживущий (15 мин) подписанный JWT (`type=hls`, привязан к `video_id`); `/hls/*` защищён `HLSAuth` — public/unlisted проходят без токена, private требуют hls-токен или access-токен владельца. Метаданные видео кешируются в gateway (bounded LRU, TTL 10с, негативный 404/403 — 5с, issue #54): один playback даёт 100+ запросов сегментов, каждый не должен бить в metadata.
 - **Framework**: Gin, Echo, or chi.
 - **Communication**: REST or gRPC to internal services.
 
@@ -70,14 +71,14 @@ Each service has its own `Dockerfile` and can be developed independently. Go-с�
 ### 3. Upload Service (Go)
 - **Purpose**: Accept video uploads from users, store raw files in MinIO, publish `video.uploaded` event to queue.
 - **Framework**: Go standard library or Gin.
-- **Key features**: Multipart upload, resumable uploads, progress tracking.
+- **Key features**: основной путь — S3 multipart upload (issue #56): браузер PUT'ит presigned 8МБ чанки напрямую в MinIO (≤10000 частей), сервер только создаёт сессию (`POST /api/v1/videos/multipart`), presign'ит части и завершает загрузку (`complete`) с проверкой собранного объекта. Legacy-пути: `POST /api/v1/videos/upload` (прокси через gateway, fallback для мелких файлов), presigned PUT (`/presign` + `/complete`), resumable Content-Range (`/resumable`).
 
 ### 4. Auth Service (Python)
 - **Purpose**: User authentication, JWT issuance, OAuth2 integration.
 - **Framework**: FastAPI (or Django + DRF).
 - **Database**: PostgreSQL (users, tokens).
 - **Communication**: Exposes `/auth/*` endpoints; other services validate JWT via middleware.
-- **JWT**: PyJWT (HS256) + argon2-cffi; токены содержат `exp`, `sub`, `type` (`access`/`refresh`); refresh-токены также несут `jti` — активный jti юзера хранится в Redis, ротация в `/refresh` атомарна и отзывает старый refresh (reuse → 401), `/refresh` проверяет существование юзера; размер токена ограничен при decode (issue #48, CVE-2024-33663/33664).
+- **JWT**: PyJWT (HS256) + argon2-cffi; токены содержат `exp`, `sub`, `type` (`access`/`refresh`); refresh-токены также несут `jti` — активный jti юзера хранится в Redis, ротация в `/refresh` атомарна и отзывает старый refresh (reuse → 401), `/refresh` проверяет существование юзера; `/me` и Go-мидлвари принимают только `type=access` — refresh не является identity (issue #53, #76); размер токена ограничен при decode (issue #48, CVE-2024-33663/33664).
 
 ### 5. Transcoding Worker (Python)
 - **Purpose**: Consume `video.uploaded` events, download original from MinIO, run FFmpeg to produce multiple renditions, upload results, publish `video.transcoded` event.
@@ -128,9 +129,10 @@ docker-compose up --build
 This will start:
 - MinIO on `:9000` (API) and `:9001` (console) — published loopback-only (issue #43), bucket fully private: reads via presigned URLs or gateway proxies
 - PostgreSQL on `:5432`
+- Redis on `:6379` — rate-limit gateway, активный jti refresh-токенов auth (issue #64)
 - RabbitMQ on `:5672` (and management UI on `:15672`)
 - All microservices
-- nginx-vod on `:8080`
+- nginx-vod — internal, без публикации порта (issue #43); доступен только через gateway `/hls/*`
 - Frontend dev server on `:3000`
 
 ### Environment Variables
