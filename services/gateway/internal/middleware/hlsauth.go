@@ -393,8 +393,8 @@ func HLSTokenHandler(jwtSecret, internalToken, metadataURL string) http.HandlerF
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"token":      token,
-		"expires_in": int(hlsTokenTTL.Seconds()),
+			"token":      token,
+			"expires_in": int(hlsTokenTTL.Seconds()),
 			"url":        fmt.Sprintf("/hls/%s/master.m3u8?token=%s", videoID, token),
 		})
 	}
