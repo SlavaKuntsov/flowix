@@ -27,13 +27,18 @@ func extractVideoID(path string) string {
 	return ""
 }
 
+// hlsTokenTTL: подписанный URL для приватного видео. Короткий TTL —
+// утечка ссылки закрывается сама, токен всё равно выдаётся на каждый запуск
+// воспроизведения (logout-ревью: час — слишком долго).
+const hlsTokenTTL = 15 * time.Minute
+
 // GenerateHLSToken creates a short-lived JWT for HLS access to a private video.
 func GenerateHLSToken(videoID, userID, secret string) (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"sub":      userID,
 		"video_id": videoID,
-		"exp":      now.Add(time.Hour).Unix(),
+		"exp":      now.Add(hlsTokenTTL).Unix(),
 		"iat":      now.Unix(),
 		"type":     "hls",
 	}
@@ -388,8 +393,8 @@ func HLSTokenHandler(jwtSecret, internalToken, metadataURL string) http.HandlerF
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"token":      token,
-			"expires_in": 3600,
+		"token":      token,
+		"expires_in": int(hlsTokenTTL.Seconds()),
 			"url":        fmt.Sprintf("/hls/%s/master.m3u8?token=%s", videoID, token),
 		})
 	}

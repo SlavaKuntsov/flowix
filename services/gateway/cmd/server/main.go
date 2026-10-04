@@ -186,7 +186,7 @@ func newRouter(cfg routerConfig) *chi.Mux {
 	r.With(authMw).Post("/api/v1/videos/{id}/multipart/presign-part", uploadProxy.ServeHTTP)
 	r.With(authMw).Post("/api/v1/videos/{id}/multipart/complete", uploadProxy.ServeHTTP)
 
-	// --- HLS token for private videos (signed URL 1h) — must be before generic /videos/* proxy ---
+	// --- HLS token for private videos (signed URL 15m) — must be before generic /videos/* proxy ---
 	r.With(authMw).Get("/api/v1/videos/{id}/hls-token", gwmw.HLSTokenHandler(cfg.jwtSecret, cfg.internalToken, cfg.metadataURL))
 
 	// --- Metadata service ---
