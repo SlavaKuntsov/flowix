@@ -73,6 +73,10 @@ export default function WatchPage() {
       getHlsToken(video.id)
         .then((t) => setHlsSrc(getHlsUrl(video.id, t.token)))
         .catch(() => setHlsSrc(getHlsUrl(video.id)));
+    } else if (video.visibility === "private") {
+      // logout/не-владелец: гасим плеер сразу — подписанный hls-токен старой
+      // сессии не должен продолжать играть в открытой вкладке
+      setHlsSrc(null);
     } else {
       setHlsSrc(getHlsUrl(video.id));
     }
@@ -127,7 +131,15 @@ export default function WatchPage() {
     <div className="flex flex-col gap-6">
       <div className="">
         {hlsReady ? (
-          hlsSrc ? <VideoPlayer src={hlsSrc} /> : <div className="flex aspect-video items-center justify-center rounded-xl border bg-white text-zinc-500">Loading HLS…</div>
+          hlsSrc ? (
+            <VideoPlayer src={hlsSrc} />
+          ) : video.visibility === "private" && !isOwner ? (
+            <div className="flex aspect-video items-center justify-center rounded-xl border bg-white text-zinc-500">
+              Private video — sign in as the owner to watch
+            </div>
+          ) : (
+            <div className="flex aspect-video items-center justify-center rounded-xl border bg-white text-zinc-500">Loading HLS…</div>
+          )
         ) : (
           <div className="flex aspect-video items-center justify-center rounded-xl border bg-white text-zinc-500">
             {video.status === "processing" || video.status === "uploaded" ? (
