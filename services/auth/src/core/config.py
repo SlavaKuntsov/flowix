@@ -1,7 +1,9 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
     database_url: str = "postgres://flowix:flowix@localhost:5432/flowix?sslmode=disable"
     # asyncpg needs postgresql+asyncpg scheme
     # issue #53: empty secret fail-fasts at startup (main.validate_secrets) unless ENV=dev
@@ -12,10 +14,6 @@ class Settings(BaseSettings):
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
     redis_url: str = "redis://redis:6379/0"
-
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
 
 
 settings = Settings()

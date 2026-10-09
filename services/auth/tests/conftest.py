@@ -4,7 +4,7 @@ from src.core.config import settings
 from src.core.tokenstore import get_token_store
 from src.main import app
 
-TEST_JWT_SECRET = "test-secret-for-auth-unit-tests"
+TEST_JWT_SECRET = "test-secret-for-auth-unit-tests-32b"
 
 
 class FakeTokenStore:
