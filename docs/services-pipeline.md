@@ -18,16 +18,17 @@ Flowix — MVP видеоплатформы с адаптивным стрими
 
 | Сервис | Язык / Фреймворк | Порт | За что отвечает | Хранит / читает |
 |---|---|---|---|---|
-| **gateway** | Go + `chi` | `:8080` | Единая точка входа. Роутит `/api/v1/auth/*` → auth, `/api/v1/videos/*` → metadata/upload, `/hls/*` → nginx-vod. CORS, rate-limit, JWT-проверка, `healthz` | Ничего не хранит, прокси |
-| **auth** | Python FastAPI | `:8001` | Регистрация, логин, refresh, `GET /me`. Выпускает JWT (`HS256`, access 15м / refresh 7д, Argon2) | `postgres.users` |
+| **gateway** | Go + `chi` | `:8080` | Единая точка входа. Роутит `/api/v1/auth/*` → auth, `/api/v1/videos/*` → metadata/upload, `/hls/*` → nginx-vod. CORS, rate-limit, JWT-проверка, `healthz`; `GET /api/v1/videos/{id}/hls-token` — короткоживущий (15м) подписанный токен для приватных HLS-ссылок | Ничего не хранит, прокси |
+| **auth** | Python FastAPI | `:8001` | Регистрация, логин, refresh, `GET /me`. Выпускает JWT (`HS256`, access 15м / refresh 7д, Argon2). Refresh-ротация: активный `jti` хранится в Redis, reuse старого refresh → 401; `/me` принимает только `type=access` (issue #76) | `postgres.users`, Redis (`auth:refresh:<user_id>`) |
 | **metadata** | Go + `chi` | `:8002` | CRUD видео: `GET/POST /api/v1/videos`, `GET/PATCH/DELETE /api/v1/videos/:id`. Внутренний `PATCH /internal/videos/:id/status` для transcoder'а. Валидация, пагинация | `postgres.videos`, `video_renditions` |
-| **upload** | Go + `chi` | `:8003` | Принимает `multipart/form-data` на `POST /api/v1/videos/upload`, льёт оригинал в MinIO `raw/{id}/original.mp4`, создаёт запись `status=uploaded` через metadata, публикует `video.uploaded` в RabbitMQ | MinIO + RabbitMQ + metadata |
+| **upload** | Go + `chi` | `:8003` | Оркестрирует загрузку оригинала в MinIO `raw/{id}/original.mp4`. Основной путь — S3 multipart (issue #56): `POST /api/v1/videos/multipart` создаёт сессию + запись `status=uploaded` через metadata, `presign-part` отдаёт presigned URL'ы 8МБ чанков (браузер льёт их напрямую в MinIO, ≤10000 частей), `complete` склеивает части, проверяет собранный объект (StatObject) и публикует `video.uploaded` в RabbitMQ. Legacy-пути: `POST /api/v1/videos/upload` (прокси через gateway, fallback для мелких файлов), `POST /presign`+`/complete`, `/resumable` | MinIO + RabbitMQ + metadata |
 | **transcoder** | Python pika + FFmpeg | — (воркер) | Слушает `video.uploaded`, качает оригинал, `ffprobe` → 3× FFmpeg параллельно (360p/720p/1080p), льёт `renditions/{id}/{quality}.mp4` в MinIO, `PATCH metadata status=ready`, публикует `video.transcoded`. Тут же делает превью (`-ss 1 -vframes 1`) | MinIO, RabbitMQ, metadata |
 | **streaming (nginx-vod)** | nginx + `kaltura/nginx-vod-module` | internal (без публикации порта, issue #43) | Отдаёт HLS/DASH на лету через gateway `/hls/*` (HLSAuth): `GET /hls/{id}/master.m3u8` склеивает 3 MP4 в мастер-манифест, сегменты режет по ключевым кадрам. JIT — храним только MP4, сегменты не прегенерим. `vod_mode mapped`; MP4 читает из MinIO по presigned GET из mapping (`metadata /internal/videos/:id/vod`) | Читает MinIO (presigned) |
-| **frontend** | Next.js 14 + `hls.js` + `zustand` + `tailwind` | `:3000` | Лента `/`, просмотр `/watch/[id]` (`new Hls().loadSource(master.m3u8)` + `playbackRate 0.5–2x`), загрузка `/upload` (multipart + прогресс) | Gateway + HLS |
+| **frontend** | Next.js 14 + `hls.js` + `zustand` + `tailwind` | `:3000` | Лента `/`, просмотр `/watch/[id]` (`new Hls().loadSource(master.m3u8)` + `playbackRate 0.5–2x`; для приватного видео сначала hls-token, logout гасит плеер), загрузка `/upload` (S3 multipart чанками 8МБ напрямую в MinIO + resume). API-слой: silent refresh на 401 с guard от гонки ротации между вкладками | Gateway + HLS |
 | **infra: Postgres** | `postgres:16-alpine` | `:5432` | `users`, `videos (status: uploaded/processing/ready/failed)`, `video_renditions` — см. `deploy/postgres/init.sql:1` | — |
 | **infra: MinIO** | `minio/minio` | `:9000/:9001` | S3-совместимое хранилище: `raw/` оригиналы, `renditions/` готовые MP4, превью | — |
 | **infra: RabbitMQ** | `rabbitmq:3-management` | `:5672/:15672` | Очередь `video.uploaded` / `video.transcoded` (брокер pipeline-событий). UI на `:15672` | — |
+| **infra: Redis** | `redis` (с паролем, issue #52/#64) | `:6379` | Rate-limit gateway (fixed-window), активный `jti` refresh-токенов auth (`auth:refresh:<user_id>`) | — |
 
 Каждый сервис — свой `Dockerfile` + `go.mod` / `pyproject.toml` (uv), собирается независимо. Локально — `make up` / `docker compose --env-file .env -f deploy/docker-compose.yml up --build -d`.
 
@@ -46,14 +47,16 @@ Flowix — MVP видеоплатформы с адаптивным стрими
         │
         │  JWT в Authorization: Bearer
         ▼
-   ┌─────────┐  POST /api/v1/videos/upload (multipart: file+title)
+   ┌─────────┐  POST /api/v1/videos/multipart (S3 multipart, issue #56)
    │ gateway │ ──► upload :8003
    └─────────┘         │
                        ├─1 validate JWT → X-User-ID
                        ├─2 POST metadata /internal/videos → videos.status=uploaded
-                       ├─3 PutObject MinIO raw/{video_id}/original.mp4
-                       ├─4 Publish RabbitMQ video.uploaded {video_id, s3_key, owner_id}
-                       └─5 201 {id, status: uploaded} → gateway → frontend
+                       ├─3 CreateMultipartUpload raw/{video_id}/original.mp4
+                       ├─4 presign-part ×N → браузер PUT'ит 8МБ чанки напрямую в MinIO
+                       ├─5 complete: ListParts → CompleteMultipartUpload → StatObject
+                       ├─6 Publish RabbitMQ video.uploaded {video_id, s3_key, owner_id}
+                       └─7 201 {id, status: uploaded} → gateway → frontend
                                │
                                ▼
                         ┌──────────┐ RabbitMQ video.uploaded
@@ -129,7 +132,7 @@ ffmpeg -i in.mp4 -vn -c:a aac -b:a 128k -ar 48000 -ac 2 audio.m4a
 
 1. `GET /api/v1/videos` → лента.
 2. `GET /api/v1/videos/:id` → мета + `status`.
-3. Если `ready`, `hls.js` грузит `/hls/{id}/master.m3u8` (через gateway). Внутри `EXT-X-STREAM-INF` на каждое качество.
+3. Если `ready`, `hls.js` грузит `/hls/{id}/master.m3u8` (через gateway). Внутри `EXT-X-STREAM-INF` на каждое качество. Приватное видео: сначала `GET /api/v1/videos/{id}/hls-token` (только владелец) → `/hls/{id}/master.m3u8?token=…` (TTL 15м — утечка ссылки закрывается сама); logout обнуляет источник плеера, чтобы подписанный токен не доигрывал в открытой вкладке.
 4. Плеер сам выбирает битрейт по сети; ручное переключение — без перезагрузки плеера. `video.playbackRate` для скорости.
 
 ---
@@ -158,6 +161,7 @@ scripts/e2e.sh                    — upload→ready→master.m3u8→ffprobe→g
 - **Загрузка падает**: проверь `upload` логи, MinIO `:9001`, RabbitMQ `:15672` очереди, `metadata` — создалась ли запись `uploaded`.
 - **Транскодер не берёт задачу**: `make dev-transcoder` логи, `RABBITMQ_URL` в `.env`, FFmpeg установлен (`ffmpeg -version`), права MinIO.
 - **HLS 404 / нет сегментов**: `curl :8080/hls/{id}/master.m3u8` (gateway, issue #43 — nginx-vod без публикации порта) должен вернуть `EXT-X-STREAM-INF` ×3. Проверь `renditions/` в MinIO, `nginx.conf` `vod_upstream_location` и presign в `metadata /internal/videos/:id/vod`.
+- **HLS 403 на приватном видео**: нет/просрочен hls-токен (TTL 15м) или запрос не от владельца — фронт берёт `GET /api/v1/videos/{id}/hls-token` и добавляет `?token=` к URL манифеста.
 - **Gateway 502**: сервис за ним не поднят — `make ps`, `make logs`.
 
 См. также `scripts/e2e.sh` — прогоняет `upload → poll ready → curl master.m3u8 → ffprobe aligned segments (EXTINF cross-check, h264) → gateway /hls` (фаза 8). Prod-пайплайн — `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml up --build -d` (CDN `Cache-Control` для manifests/segments).
