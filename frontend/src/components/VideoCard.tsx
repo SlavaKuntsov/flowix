@@ -5,22 +5,29 @@ import { useAuth } from "@/store/auth";
 import Link from "next/link";
 import { useState } from "react";
 
-function ownerName(video: Video): string {
-  return video.owner_email || video.owner_id.slice(0, 8);
+function statusColor(s: Video["status"]): string {
+  switch (s) {
+    case "ready":
+      return "bg-green-100 text-green-700";
+    case "processing":
+      return "bg-yellow-100 text-yellow-700";
+    case "failed":
+      return "bg-red-100 text-red-700";
+    default:
+      return "bg-zinc-100 text-zinc-600";
+  }
 }
 
 export default function VideoCard({ video, onDeleted }: { video: Video; onDeleted?: (id: string) => void }) {
   const thumb = getThumbnailUrl(video);
   const { userId } = useAuth();
   const [deleting, setDeleting] = useState(false);
-  const isOwner = !!userId && video.owner_id === userId;
-  const duration = formatDuration(video.duration);
-  const initial = ownerName(video).charAt(0).toUpperCase();
+  const isOwner = userId && video.owner_id === userId;
 
   const handleDelete = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!confirm(`Delete "${video.title}"? This can't be undone.`)) return;
+    if (!confirm(`Удалить "${video.title}"?`)) return;
     setDeleting(true);
     try {
       await deleteVideo(video.id);
@@ -32,28 +39,14 @@ export default function VideoCard({ video, onDeleted }: { video: Video; onDelete
   };
 
   return (
-    <article className="group surface surface-hover relative overflow-hidden">
-      <Link href={`/watch/${video.id}`} className="block focus-visible:outline-none">
-        <div className="relative aspect-video overflow-hidden bg-surface-muted">
+    <div className="group relative overflow-hidden rounded-xl border bg-white hover:shadow-md transition">
+      <Link href={`/watch/${video.id}`} className="block">
+        <div className="aspect-video overflow-hidden bg-zinc-100 flex items-center justify-center text-zinc-400 text-sm">
           {thumb ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={thumb}
-              alt={video.title}
-              loading="lazy"
-              className="h-full w-full object-cover outline outline-1 -outline-offset-1 outline-black/10 transition-transform duration-300 ease-out group-hover:scale-[1.03] dark:outline-white/10"
-            />
+            <img src={thumb} alt={video.title} className="h-full w-full object-cover group-hover:scale-[1.02] transition" loading="lazy" />
           ) : (
-            <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-surface-muted to-surface text-content-subtle">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" aria-hidden className="translate-x-[2px] opacity-70">
-                <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.3-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z" />
-              </svg>
-            </div>
-          )}
-          {duration && (
-            <span className="absolute bottom-2 right-2 rounded-md bg-black/75 px-1.5 py-0.5 text-xs font-medium tabular-nums text-white">
-              {duration}
-            </span>
+            <span className="group-hover:text-zinc-600">▶ {video.title}</span>
           )}
         </div>
 
@@ -73,31 +66,22 @@ export default function VideoCard({ video, onDeleted }: { video: Video; onDelete
               {formatDate(video.created_at)}
             </time>
           </div>
-
-          <div className="mt-3 flex items-center justify-between gap-2">
-            <StatusBadge status={video.status} />
-            {isOwner && <span className="chip">Yours</span>}
+          <div className="mt-2 flex items-center justify-between">
+            <span className={`rounded px-2 py-0.5 text-xs font-medium ${statusColor(video.status)}`}>{video.status}</span>
+            {isOwner && <span className="rounded bg-zinc-900 px-2 py-0.5 text-xs text-white">твое</span>}
           </div>
         </div>
       </Link>
-
       {isOwner && (
         <button
           onClick={handleDelete}
           disabled={deleting}
-          title="Delete video"
-          aria-label="Delete video"
-          className="absolute right-2 top-2 flex size-8 items-center justify-center rounded-lg bg-black/60 text-white opacity-0 backdrop-blur-sm transition-opacity duration-150 hover:bg-black/80 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white group-hover:opacity-100 disabled:opacity-50 after:absolute after:left-1/2 after:top-1/2 after:size-10 after:-translate-x-1/2 after:-translate-y-1/2"
+          title="Удалить видео"
+          className="absolute right-2 top-2 rounded bg-white/90 px-2 py-1 text-xs font-medium text-red-600 opacity-0 shadow hover:bg-white group-hover:opacity-100 disabled:opacity-50"
         >
-          {deleting ? (
-            <span className="text-xs">…</span>
-          ) : (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-              <path d="M6 6l12 12M18 6L6 18" />
-            </svg>
-          )}
+          {deleting ? "…" : "✕"}
         </button>
       )}
-    </article>
+    </div>
   );
 }
