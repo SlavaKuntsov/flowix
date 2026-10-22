@@ -175,6 +175,9 @@ Refer to `.env.example` for all variables. Key ones:
 - State management: Next Context or Zustand (no Redux unless necessary).
 - hls.js integration as per official docs.
 - Keep components small and reusable.
+- Styling: Tailwind with **semantic tokens** defined in `src/app/globals.css` and wired in `tailwind.config.ts` (`bg-surface`, `text-content`, `border-line`, `accent`…). Don't hardcode raw palette colors in components — use token utilities so both themes stay consistent.
+- Dark theme: `next-themes` (`attribute="class"` on `<html>`), system preference by default, manual toggle in `src/components/ThemeToggle.tsx`. `color-scheme` flips per theme, so native controls follow.
+- Shared UI primitives live in the component layer (`.surface`, `.btn`, `.input`, `.chip`, `.label`); reuse them instead of re-styling per page.
 
 ---
 
