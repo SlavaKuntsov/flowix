@@ -185,7 +185,8 @@ export default function WatchPage() {
             <>
               <Spinner />
               <span>
-                Transcoding… <span className="text-content-subtle">{video.status}</span>
+                {video.status === "uploaded" ? "Waiting for upload…" : "Transcoding…"}{" "}
+                <span className="text-content-subtle">{video.status}</span>
               </span>
             </>
           ) : video.status === "failed" ? (
