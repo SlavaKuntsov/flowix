@@ -1,8 +1,8 @@
-import Link from "next/link";
-import { deleteVideo, getThumbnailUrl, type Video } from "@/lib/api";
-import { useAuth } from "@/store/auth";
-import { formatDate, formatDuration } from "@/lib/format";
 import StatusBadge from "@/components/StatusBadge";
+import { deleteVideo, getThumbnailUrl, type Video } from "@/lib/api";
+import { formatDate, formatDuration } from "@/lib/format";
+import { useAuth } from "@/store/auth";
+import Link from "next/link";
 import { useState } from "react";
 
 function ownerName(video: Video): string {
@@ -67,7 +67,7 @@ export default function VideoCard({ video, onDeleted }: { video: Video; onDelete
             <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-surface-muted text-[10px] font-semibold uppercase text-content-muted">
               {initial}
             </span>
-            <span className="truncate">@{ownerName(video)}</span>
+            <span className="truncate">{ownerName(video)}</span>
             <span aria-hidden>·</span>
             <time dateTime={video.created_at} className="shrink-0 tabular-nums">
               {formatDate(video.created_at)}
