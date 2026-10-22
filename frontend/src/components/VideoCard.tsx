@@ -1,6 +1,8 @@
-import Link from "next/link";
+import StatusBadge from "@/components/StatusBadge";
 import { deleteVideo, getThumbnailUrl, type Video } from "@/lib/api";
+import { formatDate, formatDuration } from "@/lib/format";
 import { useAuth } from "@/store/auth";
+import Link from "next/link";
 import { useState } from "react";
 
 function statusColor(s: Video["status"]): string {
@@ -47,13 +49,22 @@ export default function VideoCard({ video, onDeleted }: { video: Video; onDelete
             <span className="group-hover:text-zinc-600">▶ {video.title}</span>
           )}
         </div>
-        <div className="p-3">
-          <h3 className="line-clamp-1 font-medium leading-tight">{video.title || "Untitled"}</h3>
-          <p className="line-clamp-1 text-sm text-zinc-500">{video.description || "—"}</p>
-          <div className="mt-1 flex items-center gap-1 text-xs text-zinc-500">
-            <span className="truncate">@{video.owner_email || video.owner_id.slice(0, 8)}</span>
-            <span>·</span>
-            <span>{new Date(video.created_at).toLocaleDateString()}</span>
+
+        <div className="p-4">
+          <h3 className="line-clamp-2 font-semibold leading-snug text-content">{video.title || "Untitled"}</h3>
+          <p className="mt-1 line-clamp-1 text-sm text-content-muted">
+            {video.description || "No description"}
+          </p>
+
+          <div className="mt-3 flex items-center gap-2 text-xs text-content-subtle">
+            <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-surface-muted text-[10px] font-semibold uppercase text-content-muted">
+              {initial}
+            </span>
+            <span className="truncate">{ownerName(video)}</span>
+            <span aria-hidden>·</span>
+            <time dateTime={video.created_at} className="shrink-0 tabular-nums">
+              {formatDate(video.created_at)}
+            </time>
           </div>
           <div className="mt-2 flex items-center justify-between">
             <span className={`rounded px-2 py-0.5 text-xs font-medium ${statusColor(video.status)}`}>{video.status}</span>
