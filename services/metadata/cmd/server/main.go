@@ -151,6 +151,7 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(mw.InternalAuth(internalToken))
 		r.Patch("/internal/videos/{id}/status", vh.UpdateStatus)
+		r.Get("/internal/videos/stale", vh.ListStale)
 		r.Get("/internal/videos/{id}", vh.GetInternal)
 		r.Get("/internal/videos/{id}/vod", vh.GetVODMapping)
 	})

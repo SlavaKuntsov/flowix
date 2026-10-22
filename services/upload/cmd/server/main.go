@@ -9,10 +9,12 @@ package main
 // @name Authorization
 // @description Type "Bearer {token}"
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	pkghttp "flowix/pkg/httpserver"
 	pkglogger "flowix/pkg/logger"
@@ -22,6 +24,7 @@ import (
 	"flowix/upload/internal/client"
 	"flowix/upload/internal/handler"
 	"flowix/upload/internal/queue"
+	"flowix/upload/internal/reconciler"
 	"flowix/upload/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -73,6 +76,12 @@ func main() {
 	rh := handler.NewResumableHandler(store, metaCl)
 	mp := handler.NewMultipartHandler(store, pub, metaCl, metaCl)
 
+	// Self-heal videos stuck in 'uploaded': an upload row is created before the
+	// bytes land, so an upload that never completes hangs forever (see package
+	// reconciler). Runs for the lifetime of the process.
+	rec := reconciler.New(metaCl, store, pub, secondsEnv("UPLOAD_STALE_TTL_SECONDS", 3600), 100)
+	go rec.Run(context.Background(), secondsEnv("UPLOAD_RECONCILE_INTERVAL_SECONDS", 300))
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.Recoverer, pkgmw.RequestLogger("upload"))
 
@@ -118,4 +127,12 @@ func requireEnv(k string) string {
 		log.Fatalf("required environment variable %s is empty — set it in .env (see .env.example)", k)
 	}
 	return v
+}
+
+// secondsEnv reads a positive number of seconds from env, falling back to def.
+func secondsEnv(k string, def int) time.Duration {
+	if n, err := strconv.Atoi(os.Getenv(k)); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return time.Duration(def) * time.Second
 }
