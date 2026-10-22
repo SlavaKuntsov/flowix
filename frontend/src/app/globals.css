@@ -2,9 +2,117 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+   Design tokens — RGB channels so Tailwind opacity modifiers work.
+   Light is the default; `.dark` (set by next-themes on <html>) flips every
+   value, so a single class like `bg-surface` is correct in both themes.
+--------------------------------------------------------------------------- */
 :root {
   color-scheme: light;
+
+  --bg: 247 247 248;
+  --surface: 255 255 255;
+  --surface-muted: 244 244 245;
+  --surface-hover: 244 244 245;
+  --fg: 24 24 27;
+  --fg-muted: 82 82 91;
+  --fg-subtle: 161 161 170;
+  --border: 228 228 231;
+  --accent: 239 68 68;
+  --accent-hover: 220 38 38;
+  --accent-text: 220 38 38;
+  --accent-soft: 254 226 226;
+  --accent-fg: 255 255 255;
+
+  --shadow-surface: 0 0 0 1px rgb(0 0 0 / 0.05), 0 1px 2px -1px rgb(0 0 0 / 0.06),
+    0 4px 12px -2px rgb(0 0 0 / 0.06);
+  --shadow-surface-hover: 0 0 0 1px rgb(0 0 0 / 0.07), 0 2px 4px -1px rgb(0 0 0 / 0.08),
+    0 12px 28px -8px rgb(0 0 0 / 0.14);
 }
+
+.dark {
+  color-scheme: dark;
+
+  --bg: 9 9 11;
+  --surface: 24 24 27;
+  --surface-muted: 39 39 42;
+  --surface-hover: 45 45 50;
+  --fg: 244 244 245;
+  --fg-muted: 161 161 170;
+  --fg-subtle: 113 113 122;
+  --border: 42 42 46;
+  --accent: 239 68 68;
+  --accent-hover: 248 113 113;
+  --accent-text: 248 113 113;
+  --accent-soft: 69 26 28;
+  --accent-fg: 255 255 255;
+
+  --shadow-surface: 0 0 0 1px rgb(255 255 255 / 0.06);
+  --shadow-surface-hover: 0 0 0 1px rgb(255 255 255 / 0.1), 0 12px 28px -8px rgb(0 0 0 / 0.6);
+}
+
+@layer base {
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  p {
+    text-wrap: pretty;
+  }
+  /* Nice focus default for anything not using a component class. */
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent) / 0.6);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* Elevated surface with a hairline ring baked into the shadow. */
+  .surface {
+    @apply rounded-2xl bg-surface shadow-surface transition-shadow duration-200;
+  }
+  .surface-hover:hover {
+    @apply shadow-surface-hover;
+  }
+
+  .label {
+    @apply mb-1.5 block text-sm font-medium text-content;
+  }
+
+  .input {
+    @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-content
+      placeholder:text-content-subtle transition-colors
+      focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full bg-surface-muted px-2.5 py-1 text-xs font-medium text-content-muted;
+  }
+
+  /* One button base; variants set the colour. Press feedback is 0.96 (skill). */
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3.5 py-2
+      text-sm font-medium transition-[background-color,border-color,color,box-shadow,transform]
+      duration-150 ease-out active:scale-[0.96]
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/45
+      focus-visible:ring-offset-2 focus-visible:ring-offset-bg
+      disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply bg-accent text-accent-fg shadow-[0_1px_2px_rgb(0_0_0/0.15)] hover:bg-accent-hover;
+  }
+  .btn-secondary {
+    @apply bg-surface text-content shadow-surface hover:shadow-surface-hover;
+  }
+  .btn-ghost {
+    @apply text-content-muted hover:bg-surface-muted hover:text-content;
+  }
+  .btn-danger {
+    @apply bg-red-600 text-white hover:bg-red-700;
+  }
+}
+
 body {
-  @apply bg-zinc-50 text-zinc-900 antialiased;
+  @apply bg-bg text-content antialiased;
 }
