@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"flowix/metadata/internal/model"
 	"github.com/google/uuid"
@@ -81,7 +82,10 @@ func (r *VideoRepo) GetByID(ctx context.Context, id string) (*model.Video, error
 func (r *VideoRepo) List(ctx context.Context, limit, offset int, viewerID string) ([]model.Video, error) {
 	// $3 участвует и в текстовом сравнении ($3 <> ''), и в сравнении с uuid-колонкой:
 	// без ::uuid Postgres выводит тип $3 как text и падает с SQLSTATE 42883 (uuid = text)
-	q := `SELECT v.id, v.owner_id, u.email, v.title, v.description, v.duration, v.status, COALESCE(v.visibility::text,'public'), v.thumbnail_s3_key, v.created_at, v.updated_at FROM videos v LEFT JOIN users u ON u.id=v.owner_id WHERE v.visibility='public' OR ($3 <> '' AND v.owner_id=$3::uuid) ORDER BY v.created_at DESC LIMIT $1 OFFSET $2`
+	// Лента: всем — только public+ready (неготовые/упавшие не светятся чужим);
+	// владелец видит свои в любом статусе (uploaded/processing/failed), чтобы
+	// удалить или перезалить (issue: зомби-видео засоряли ленту).
+	q := `SELECT v.id, v.owner_id, u.email, v.title, v.description, v.duration, v.status, COALESCE(v.visibility::text,'public'), v.thumbnail_s3_key, v.created_at, v.updated_at FROM videos v LEFT JOIN users u ON u.id=v.owner_id WHERE (v.visibility='public' AND v.status='ready') OR ($3 <> '' AND v.owner_id=$3::uuid) ORDER BY v.created_at DESC LIMIT $1 OFFSET $2`
 	rows, err := r.pool.Query(ctx, q, limit, offset, viewerID)
 	if err != nil {
 		return nil, err
@@ -151,6 +155,30 @@ func (r *VideoRepo) Delete(ctx context.Context, id, ownerID string) error {
 func (r *VideoRepo) UpdateThumbnail(ctx context.Context, id string, thumbnailS3Key string) error {
 	_, err := r.pool.Exec(ctx, `UPDATE videos SET thumbnail_s3_key=$1 WHERE id=$2`, thumbnailS3Key, id)
 	return err
+}
+
+// ListStaleUploaded returns videos still in 'uploaded' created more than
+// olderThan ago. A row is inserted before the bytes are uploaded, so a video
+// whose upload never completes sits in 'uploaded' forever; the upload-service
+// reconciler uses this list to re-queue or fail such rows.
+func (r *VideoRepo) ListStaleUploaded(ctx context.Context, olderThan time.Duration, limit int) ([]model.StaleUpload, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx, `SELECT id, owner_id FROM videos WHERE status='uploaded' AND created_at < now() - ($1::int * interval '1 second') ORDER BY created_at ASC LIMIT $2`, int(olderThan.Seconds()), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.StaleUpload{}
+	for rows.Next() {
+		var s model.StaleUpload
+		if err := rows.Scan(&s.ID, &s.OwnerID); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 func (r *VideoRepo) UpdateStatus(ctx context.Context, id string, status model.VideoStatus, renditions []model.Rendition) error {

@@ -500,6 +500,9 @@ if [ -n "${TOKEN:-}" ]; then
     code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X PUT --data-binary "@$TMP/part2" -H "Authorization: Bearer $TOKEN" -H "Content-Type: video/mp4" -H "Content-Range: bytes $half-$end2/$total" "$GATEWAY/api/v1/videos/$RESUME2_ID/resumable")
     [ "$code" = "200" ] || fail "second half resumable PUT not 200: $code $(cat "$TMP/body")"
     say "   50% resume: ok (308→200)"
+    # complete so the video is queued and does not linger in 'uploaded'
+    code=$(curl -s -o "$TMP/body" -w '%{http_code}' -X POST "$GATEWAY/api/v1/videos/$RESUME2_ID/complete" -H "Authorization: Bearer $TOKEN")
+    [ "$code" = "200" ] || say "   WARN: resume2 complete not 200: $code $(cat "$TMP/body")"
   else
     say "   WARN: presign for resumable failed ($code)"
   fi

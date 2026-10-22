@@ -95,6 +95,8 @@ Flowix — MVP видеоплатформы с адаптивным стрими
 
 `uploaded` → (transcoder забрал) → `processing` → `ready` | `failed`. Frontend поллит `GET /api/v1/videos/:id` пока не `ready`.
 
+Застрявшие загрузки само-лечатся: сервис upload раз в `UPLOAD_RECONCILE_INTERVAL_SECONDS` берёт записи в `uploaded` старше `UPLOAD_STALE_TTL_SECONDS` и переопубликовывает `video.uploaded` (если original есть в MinIO) либо помечает `failed` (загрузка брошена). Лента `GET /api/v1/videos` показывает всем только `public`+`ready`, владелец видит и свои не-`ready` (uploaded/processing/failed) для удаления/перезалива.
+
 ### События (контракты)
 
 - `video.uploaded {video_id: UUID, s3_key: string, owner_id: UUID}`

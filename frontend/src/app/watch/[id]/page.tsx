@@ -143,7 +143,10 @@ export default function WatchPage() {
         ) : (
           <div className="flex aspect-video items-center justify-center rounded-xl border bg-white text-zinc-500">
             {video.status === "processing" || video.status === "uploaded" ? (
-              <span className="animate-pulse">Transcoding… status: {video.status}</span>
+              <span className="animate-pulse">
+                {video.status === "uploaded" ? "Waiting for upload…" : "Transcoding…"} status:{" "}
+                {video.status}
+              </span>
             ) : video.status === "failed" ? (
               <span className="text-red-600">Transcoding failed</span>
             ) : (
