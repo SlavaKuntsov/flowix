@@ -28,6 +28,7 @@ type VideoStore interface {
 	Delete(ctx context.Context, id, ownerID string) error
 	UpdateStatus(ctx context.Context, id string, status model.VideoStatus, renditions []model.Rendition) error
 	UpdateThumbnail(ctx context.Context, id string, thumbnailS3Key string) error
+	ListStaleUploaded(ctx context.Context, olderThan time.Duration, limit int) ([]model.StaleUpload, error)
 }
 
 // StorageRemover deletes S3 objects (raw + renditions + thumbnail). Nil = skip (tests).
@@ -95,6 +96,7 @@ func (h *VideoHandler) Register(r chi.Router) {
 	})
 	// internal (no auth) for transcoder/upload
 	r.Patch("/internal/videos/{id}/status", h.UpdateStatus)
+	r.Get("/internal/videos/stale", h.ListStale)
 	r.Get("/internal/videos/{id}", h.GetInternal)
 	r.Get("/internal/videos/{id}/vod", h.GetVODMapping)
 }
@@ -186,6 +188,33 @@ func (h *VideoHandler) getVideo(w http.ResponseWriter, r *http.Request, enforceV
 	}
 	h.presignThumbnail(r.Context(), v)
 	writeJSON(w, r, http.StatusOK, v)
+}
+
+// ListStale godoc
+// @Summary List videos stuck in 'uploaded' older than the given age (internal)
+// @Description Used by the upload-service reconciler: a video row is created before the bytes land, so an upload that never completes stays in 'uploaded' forever.
+// @Tags internal
+// @Produce json
+// @Param older_than_seconds query int false "Minimum age in seconds" default(3600)
+// @Param limit query int false "Max rows (<=500)" default(100)
+// @Success 200 {object} map[string]interface{}
+// @Router /internal/videos/stale [get]
+func (h *VideoHandler) ListStale(w http.ResponseWriter, r *http.Request) {
+	olderThan := 3600
+	if v, err := strconv.Atoi(r.URL.Query().Get("older_than_seconds")); err == nil && v > 0 {
+		olderThan = v
+	}
+	limit := 100
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 500 {
+		limit = v
+	}
+	list, err := h.repo.ListStaleUploaded(r.Context(), time.Duration(olderThan)*time.Second, limit)
+	if err != nil {
+		slog.Error("list stale uploads failed", "error", err)
+		writeError(w, r, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]interface{}{"data": list})
 }
 
 type vodMapping struct {

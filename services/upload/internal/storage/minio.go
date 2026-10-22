@@ -219,6 +219,16 @@ func (m *MinioClient) FindUploadID(ctx context.Context, key string) (string, err
 	return latest, nil
 }
 
+// AbortMultipartUpload cancels an in-progress session, dropping its parts —
+// used by the reconciler to clean up abandoned uploads.
+func (m *MinioClient) AbortMultipartUpload(ctx context.Context, key, uploadID string) error {
+	core := minio.Core{Client: m.client}
+	if err := core.AbortMultipartUpload(ctx, m.bucket, key, uploadID); err != nil {
+		return fmt.Errorf("abort multipart upload %s: %w", key, err)
+	}
+	return nil
+}
+
 // ListParts returns uploaded parts ordered by part number.
 func (m *MinioClient) ListParts(ctx context.Context, key, uploadID string) ([]MultipartPart, error) {
 	core := minio.Core{Client: m.client}

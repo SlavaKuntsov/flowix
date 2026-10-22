@@ -40,6 +40,14 @@ type Video struct {
 	Renditions     []Rendition `json:"renditions,omitempty"`
 }
 
+// StaleUpload is a minimal view of a video still in 'uploaded' — the
+// upload-service reconciler uses it to re-queue a lost event or fail an
+// abandoned upload (a row is created before the bytes land).
+type StaleUpload struct {
+	ID      string `json:"id"`
+	OwnerID string `json:"owner_id"`
+}
+
 type Rendition struct {
 	VideoID string `json:"video_id"`
 	Quality string `json:"quality"`

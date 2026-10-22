@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGetVideoOwner(t *testing.T) {
@@ -72,5 +73,45 @@ func TestGetVideoOwnerOmitsEmptyToken(t *testing.T) {
 	}
 	if sawHeader {
 		t.Fatal("X-Internal-Token must be omitted when internalToken is empty")
+	}
+}
+
+func TestListStaleUploadedAndSetStatus(t *testing.T) {
+	var gotQuery, gotToken, gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("X-Internal-Token")
+		gotMethod = r.Method
+		switch r.URL.Path {
+		case "/internal/videos/stale":
+			gotQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"data":[{"id":"v1","owner_id":"o1"}]}`))
+		case "/internal/videos/v1/status":
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewMetadataClient(srv.URL, "tok")
+	list, err := c.ListStaleUploaded(2*time.Hour, 50)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "v1" || list[0].OwnerID != "o1" {
+		t.Fatalf("unexpected stale list %+v", list)
+	}
+	if gotQuery != "older_than_seconds=7200&limit=50" {
+		t.Fatalf("query = %q", gotQuery)
+	}
+	if gotToken != "tok" {
+		t.Fatalf("X-Internal-Token = %q", gotToken)
+	}
+
+	if err := c.SetStatus("v1", "failed"); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if gotMethod != "PATCH" {
+		t.Fatalf("method = %q, want PATCH", gotMethod)
 	}
 }

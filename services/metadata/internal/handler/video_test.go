@@ -61,12 +61,15 @@ func (f *fakeStore) GetByID(_ context.Context, id string) (*model.Video, error) 
 func (f *fakeStore) List(_ context.Context, limit, offset int, viewerID string) ([]model.Video, error) {
 	out := []model.Video{}
 	for _, v := range f.videos {
-		// mirror the SQL visibility filter (issue #44); empty = default public
+		// mirror the SQL feed filter (issue #44 + stale-upload fix): everyone
+		// sees only public+ready, the owner also sees their non-ready videos.
 		vis := v.Visibility
 		if vis == "" {
 			vis = model.VisibilityPublic
 		}
-		if vis != model.VisibilityPublic && (viewerID == "" || v.OwnerID != viewerID) {
+		isOwner := viewerID != "" && v.OwnerID == viewerID
+		publicReady := vis == model.VisibilityPublic && v.Status == model.StatusReady
+		if !publicReady && !isOwner {
 			continue
 		}
 		out = append(out, *v)
@@ -139,6 +142,19 @@ func (f *fakeStore) UpdateThumbnail(_ context.Context, id string, thumbnailS3Key
 	v.ThumbnailURL = &u
 	return nil
 }
+func (f *fakeStore) ListStaleUploaded(_ context.Context, olderThan time.Duration, limit int) ([]model.StaleUpload, error) {
+	out := []model.StaleUpload{}
+	for _, v := range f.videos {
+		if v.Status != model.StatusUploaded || time.Since(v.CreatedAt) < olderThan {
+			continue
+		}
+		out = append(out, model.StaleUpload{ID: v.ID, OwnerID: v.OwnerID})
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
 
 // Issue #58: wrappers that simulate a failing DB for handler 500-mapping tests.
 type failingGetStore struct {
@@ -175,6 +191,7 @@ func testRouter(store VideoStore) chi.Router {
 	r.With(optAuth).Get("/api/v1/videos", vh.List)
 	r.With(optAuth).Get("/api/v1/videos/{id}", vh.Get)
 	r.Patch("/internal/videos/{id}/status", vh.UpdateStatus)
+	r.Get("/internal/videos/stale", vh.ListStale)
 	r.Get("/internal/videos/{id}", vh.GetInternal)
 	r.Get("/internal/videos/{id}/vod", vh.GetVODMapping)
 	return r
@@ -344,6 +361,51 @@ func TestGetAndList(t *testing.T) {
 	}
 }
 
+// Feed must hide non-ready videos from everyone but their owner.
+func TestListHidesNonReadyFromOthers(t *testing.T) {
+	store := newFake()
+	store.videos["pub-ready"] = &model.Video{ID: "pub-ready", OwnerID: "o1", Title: "a", Status: model.StatusReady, Visibility: model.VisibilityPublic}
+	store.videos["pub-failed"] = &model.Video{ID: "pub-failed", OwnerID: "o1", Title: "b", Status: model.StatusFailed, Visibility: model.VisibilityPublic}
+	store.videos["pub-uploaded"] = &model.Video{ID: "pub-uploaded", OwnerID: "o1", Title: "c", Status: model.StatusUploaded, Visibility: model.VisibilityPublic}
+	r := testRouter(store)
+
+	ids := func(token string) map[string]bool {
+		req := httptest.NewRequest("GET", "/api/v1/videos?limit=50&offset=0", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("want 200 got %d %s", w.Code, w.Body.String())
+		}
+		var out struct {
+			Data []model.Video `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, v := range out.Data {
+			got[v.ID] = true
+		}
+		return got
+	}
+
+	anon := ids("")
+	if !anon["pub-ready"] || anon["pub-failed"] || anon["pub-uploaded"] {
+		t.Fatalf("anonymous feed must show only ready: %v", anon)
+	}
+	owner := ids(signToken("o1"))
+	if !owner["pub-ready"] || !owner["pub-failed"] || !owner["pub-uploaded"] {
+		t.Fatalf("owner must see own non-ready videos: %v", owner)
+	}
+	other := ids(signToken("o2"))
+	if other["pub-failed"] || other["pub-uploaded"] {
+		t.Fatalf("other user must not see non-ready videos: %v", other)
+	}
+}
+
 func TestUpdateForbidden(t *testing.T) {
 	store := newFake()
 	store.videos["vid-1"] = &model.Video{ID: "vid-1", OwnerID: "owner1", Title: "t", Status: model.StatusUploaded}
@@ -367,6 +429,30 @@ func TestUpdateForbidden(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != 200 {
 		t.Fatalf("want 200 got %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Reconciler endpoint: only 'uploaded' rows older than the threshold are listed.
+func TestListStaleUploads(t *testing.T) {
+	store := newFake()
+	store.videos["old"] = &model.Video{ID: "old", OwnerID: "o1", Title: "t", Status: model.StatusUploaded, CreatedAt: time.Now().Add(-2 * time.Hour)}
+	store.videos["fresh"] = &model.Video{ID: "fresh", OwnerID: "o1", Title: "t", Status: model.StatusUploaded, CreatedAt: time.Now()}
+	store.videos["done"] = &model.Video{ID: "done", OwnerID: "o1", Title: "t", Status: model.StatusReady, CreatedAt: time.Now().Add(-2 * time.Hour)}
+	r := testRouter(store)
+	req := httptest.NewRequest("GET", "/internal/videos/stale?older_than_seconds=3600&limit=10", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("want 200 got %d %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Data []model.StaleUpload `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Data) != 1 || out.Data[0].ID != "old" || out.Data[0].OwnerID != "o1" {
+		t.Fatalf("want only 'old', got %+v", out.Data)
 	}
 }
 
