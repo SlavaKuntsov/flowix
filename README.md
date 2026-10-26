@@ -23,6 +23,24 @@
 - **Modern frontend** — Next.js 14 App Router + `hls.js` + `zustand` + `tailwind`, `playbackRate 0.5–2×`, owner badges, delete (`DELETE /api/v1/videos/:id` owner only + S3 cleanup)
 - **Production-ready infra** — Postgres 16 + `golang-migrate` (`deploy/migrations`), MinIO, RabbitMQ, Docker Compose, healthchecks, JWT (HS256, Argon2)
 
+## 📸 Screenshots
+
+**Home feed** — responsive grid, owner badges, `Ready` status, light & dark themes
+
+| Light | Dark |
+|-------|------|
+| <img src="docs/images/home-light.png" alt="Home feed (light theme)" width="100%"> | <img src="docs/images/home-dark.png" alt="Home feed (dark theme)" width="100%"> |
+
+**Adaptive player** — HLS quality selector (`Auto` → 360p/720p/1080p), speed `0.5–2×`
+
+<p align="center">
+  <img src="docs/images/watch.png" alt="Video player with adaptive HLS quality selector" width="100%">
+</p>
+
+| Upload | Login | Register |
+|--------|-------|----------|
+| <img src="docs/images/upload.png" alt="Upload video" width="100%"> | <img src="docs/images/login.png" alt="Login" width="100%"> | <img src="docs/images/register.png" alt="Create account" width="100%"> |
+
 ## 🏗 Architecture
 
 ```
